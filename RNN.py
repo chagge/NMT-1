@@ -5,7 +5,6 @@ np.int_ = np.int32
 import matwizard as mw
 import theano
 import theano.tensor as T
-from theano.ifelse import ifelse
 from theano.tensor.shared_randomstreams import RandomStreams
 import cPickle as pkl
 import multiprocessing as mp
@@ -256,7 +255,7 @@ class Encoder:
         self.bparams +\
         self.hparams +\
         self.h_0
-    self.gparams = [theano.shared(np.zeros_like(param.get_value(), name='d'+param.name, dtype='float32')) for param in self.params]
+    self.gparams = [theano.shared(np.zeros_like(param.get_value(), name='g'+param.name, dtype='float32')) for param in self.params]
     paramVars =\
         [T.matrix() for Wparam in self.Wparams] +\
         [T.matrix() for Uparam in self.Uparams] +\
@@ -426,6 +425,57 @@ class Encoder:
           # Calculate the cell activation & apply the second nonlinearity
           if Uparam is not None:
             C = i*c + f*C_tm1_l
+            C_t.append(C)
+            if s is None:
+              s = T.nnet.sigmoid(2*hparam)
+            h = o*(s*T.tanh(C) +\
+                (1-s)*T.switch(C > 0, C, 0))
+          else:
+            C = c
+            C_t.append(C)
+            h = C
+
+          # Apply the dropout
+          if layerDatum:
+            h_t.append(h*hmask)
+          else:
+            h_t.append(h)
+          return h_t[1:] + C_t
+
+    #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    elif self.model == 'FastLSTM':
+      def recur(i, *hC_tm1):
+        C_tm1  = hC_tm1[len(hC_tm1)/2:]
+        h_tm1  = hC_tm1[:len(hC_tm1)/2]
+        h_t = [self.x[i:i+self.window].flatten()]
+        C_t = []
+        for h_tm1_l, C_tm1_l, layerDatum, Wparam, Uparam, bparam, hparam, hmask in zip(h_tm1, C_tm1, layerData, Wparam, Uparam, bparam, hparam, hmask):
+
+          s = None
+          # Calculate the activation
+          if Uparam is not None:
+            sliceLen = Wparam.shape[1]/3
+            aio = T.dot(h_t[-1], Wparam) +\
+                T.dot(h_tm1_l, Uparam) +\
+                bparam
+            i = T.nnet.sigmoid(2*aio[sliceLen:2*sliceLen])
+            o = T.nnet.sigmoid(2*aio[2*sliceLen:3*sliceLen])
+            a = aifo[:sliceLen]
+          else:
+            a = T.dot(h_t[-1], Wparam)+\
+                bparam
+
+          # Apply the first nonlinearity
+          if layerDatum:
+            s = T.nnet.sigmoid(2*hparam)
+            c = s*T.tanh(a) +\
+                (1-s)*T.switch(a > 0, a, 0)
+          else:
+            c = ofunc(a)
+
+          # Calculate the cell activation & apply the second nonlinearity
+          if Uparam is not None:
+            C = i*c + (1-i)*C_tm1_l
             C_t.append(C)
             if s is None:
               s = T.nnet.sigmoid(2*hparam)
@@ -1027,4 +1077,11 @@ class Encoder:
     print 'Adam function compiled'
     return adam
 
+#***********************************************************************
+# Test the model
+if __name__ == '__main__':
+
+  with op
+
+  
 
