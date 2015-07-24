@@ -1,7 +1,5 @@
- #!/usr/bin/env python
+#!/usr/bin/env python
 import numpy as np
-np.float_ = np.float32
-np.int_ = np.int32
 import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
