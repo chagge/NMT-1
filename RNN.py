@@ -134,33 +134,73 @@ class Library:
     return self.wsize
 
   #=====================================================================
+  # Get start string
+  def starts(self):
+
+    return self.start
+
+  #=====================================================================
+  # Get stop string 
+  def stops(self):
+
+    return self.stop
+
+  #=====================================================================
+  # Get unk string
+  def unks(self):
+
+    return self.unk
+
+  #=====================================================================
+  # Get start index
+  def starti(self):
+
+    return self.s2i(self.starts())
+
+  #=====================================================================
+  # Get stop index 
+  def stopi(self):
+
+    return self.s2i(self.stops())
+
+  #=====================================================================
+  # Get unk index
+  def unki(self):
+
+    return self.s2i[self.stops())
+
+  #=====================================================================
   # Get start vector
   def startv(self):
 
-    return self.L[self.start]
+    return self.L[self.starti()]
 
   #=====================================================================
   # Get stop vector
   def stopv(self):
 
-    return self.L[self.stop]
+    return self.L[self.stopi()]
 
   #=====================================================================
   # Get unk vector
   def unkv(self):
 
-    return self.L[self.unk]
+    return self.L[self.unki()]
 
   #=====================================================================
   # Convert strings to indices
   def s2i(self, strings):
 
+    if not hasattr(strings, '__iter__'):
+      strings = [strings]
     return np.array([[self.indices[s] for s in strings]], dtype='int32')
 
   #=====================================================================
   # Convert indices to strings 
   def i2s(self, indices):
 
+    if not hasattr(indices, '__iter__'):
+      indices = [indices]
     return [self.strings[i] for i in indices]
 
   #=====================================================================
@@ -562,8 +602,10 @@ class LangModel(Opt):
         Lmat = mw.rect_mat(dims[-1], len(lib.strings()), normalize=True, dtype='float32')
         self.Lparams.append(theano.shared(Lmat, name='LW-%d' % len(self.libs)))
       ldims.append(lib.L.get_value().shape)
-      g_0.append(lib.startv)
-    g_0 = T.concatenate([T.concatenate(g_0)[None,:]]*self.window)
+      g_0.append(lib.starti())
+      g_max.append(lib.stopi())
+    g_0 = T.concatenate(g_0, axis=1)
+    g_max = T.concatenate(g_max, axis=1)
     ldims = np.array(ldims)
     dims.insert(0, np.sum(ldims[:,1]) * self.window)
 
@@ -617,7 +659,7 @@ class LangModel(Opt):
         [T.matrix() for Lparam in self.Lparams] +\
         [T.vector() for hparam in self.hparams] +\
         [T.vector() for h_0_l  in self.h_0] +\
-        [T.vector() for C_0_l  in self.C_0]
+        ([T.vector() for C_0_l  in self.C_0] if self.model.endswith('LSTM') else [])
 
     #-------------------------------------------------------------------
     # Build the input/output variables
@@ -656,7 +698,7 @@ class LangModel(Opt):
           a = T.dot(h_tm1_l, Lparam) +\
               self.bparams[-1]
 
-          c = T.nnet.softmax(a)
+          c = T.nnet.softmax(2*a)
           y_t.append(c)
 
         h_t.append(y_t)
@@ -664,9 +706,11 @@ class LangModel(Opt):
         return h_t[1:]
 
       ##  The feedback function for generating
-      def feedback(x_t, *h_tm1):
+      #TODO make this output a probability vector rather than an index vector
+      def feedback(idxs_t, *h_tm1):
 
         # For all but the last layer
+        x_t = T.concatenate([lib.get_subtensor(idxs_t[:,i]) for i, lib in enumerate(self.libs)], axis=1)
         h_t = [x_t.flatten()]
         for h_tm1_l, Wparam, Uparam, bparam, hparam, hmask in zip(h_tm1, self.Wparams, self.Uparams, self.bparams, self.hparams, self.hmasks):
           s = T.nnet.sigmoid(2*hparam)
@@ -679,19 +723,18 @@ class LangModel(Opt):
           h_t.append(c*hmask)
 
         # For the last layer
-        h_tm1_l = h_t[-1]
+        h_t_lm1 = h_t[-1]
         l_tp1 = []
         for Lparam in self.Lparams:
-          a = T.dot(h_tm1_l, Lparam) +\
+          a = T.dot(h_t_lm1, Lparam) +\
               self.bparams[-1]
 
-          c = T.nnet.softmax(a)
-          l = Lparam[T.argmax(c)]
-          l_tp1.append(l)
+          c = T.nnet.softmax(2*a)
+          idxs_tp1.append(T.argmax(c, keepdims=True))
 
         x_tp1 = T.concatenate([x_t[1:], T.concatenate(l_tp1)[None,:]])
 
-        return [x_tp1]+h_t[1:]
+        return [x_tp1]+h_t[1:], theano.scan_module.until(T.eq(h_t[-1], g_max))
 
     #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     elif self.model == 'GRU':
@@ -729,7 +772,7 @@ class LangModel(Opt):
           a = T.dot(h_tm1_l, Lparam) +\
               self.bparams[-1]
 
-          c = T.nnet.softmax(a)
+          c = T.nnet.softmax(2*a)
           y_t.append(c)
 
         h_t.append(y_t)
@@ -737,9 +780,10 @@ class LangModel(Opt):
         return h_t[1:]
 
       ##  The feedback function for generating
-      def feedback(x_t, *h_tm1):
+      def feedback(idxs, *h_tm1):
 
         # For all but the last layer
+        x_t = T.concatenate([lib.get_subtensor(idxs[:,i]) for i, lib in enumerate(self.libs)], axis=1)
         h_t = [x_t.flatten()]
         for h_tm1_l, Wparam, Uparam, bparam, hparam, hmask in zip(h_tm1, Wparam, Uparam, bparam, hparam, hmask):
 
@@ -765,19 +809,7 @@ class LangModel(Opt):
           h_t.append(C*hmask)
 
         # For the last layer
-        h_tm1_l = h_t[-1]
-        l_tp1 = []
-        for Lparam in self.Lparams:
-          a = T.dot(h_tm1_l, Lparam) +\
-              self.bparams[-1]
-
-          c = T.nnet.softmax(a)
-          l = Lparam[T.argmax(c)]
-          l_tp1.append(l)
-
-        x_tp1 = T.concatenate([x_t[1:], T.concatenate(l_tp1)[None,:]])
-
-        return [x_tp1]+h_t[1:]
+        #TODO
 
     #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     elif self.model == 'FastGRU':
@@ -808,7 +840,7 @@ class LangModel(Opt):
           a = T.dot(h_tm1_l, Lparam) +\
               self.bparams[-1]
 
-          c = T.nnet.softmax(a)
+          c = T.nnet.softmax(2*a)
           y_t.append(c)
 
         h_t.append(y_t)
@@ -837,19 +869,7 @@ class LangModel(Opt):
           h_t.append(C*hmask)
 
         # For the last layer
-        h_tm1_l = h_t[-1]
-        l_tp1 = []
-        for Lparam in self.Lparams:
-          a = T.dot(h_tm1_l, Lparam) +\
-              self.bparams[-1]
-
-          c = T.nnet.softmax(a)
-          l = Lparam[T.argmax(c)]
-          l_tp1.append(l)
-
-        x_tp1 = T.concatenate([x_t[1:], T.concatenate(l_tp1)[None,:]])
-
-        return [x_tp1]+h_t[1:]
+        #TODO
     
     #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     elif self.model == 'LSTM':
@@ -887,7 +907,7 @@ class LangModel(Opt):
         for Lparam in self.Lparams:
           a = T.dot(h_tm1_l, Lparam) +\
               self.bparams[-1]
-          c = T.nnet.softmax(a)
+          c = T.nnet.softmax(2*a)
           y_t.append(c)
 
         C_t.append(y_t)
@@ -925,19 +945,7 @@ class LangModel(Opt):
           h_t.append(h*hmask)
 
         # For the last layer
-        h_tm1_l = h_t[-1]
-        l_tp1 = []
-        for Lparam in self.Lparams:
-          a = T.dot(h_tm1_l, Lparam) +\
-              self.bparams[-1]
-
-          c = T.nnet.softmax(a)
-          l = Lparam[T.argmax(c)]
-          l_tp1.append(l)
-
-        x_tp1 = T.concatenate([x_t[1:], T.concatenate(l_tp1)[None,:]])
-
-        return [x_tp1]+h_t[1:]
+        #TODO
     
     #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     elif self.model == 'FastLSTM':
@@ -973,7 +981,7 @@ class LangModel(Opt):
         for Lparam in self.Lparams:
           a = T.dot(h_tm1_l, Lparam) +\
               self.bparams[-1]
-          c = T.nnet.softmax(a)
+          c = T.nnet.softmax(2*a)
           y_t.append(c)
 
         C_t.append(y_t)
@@ -1009,19 +1017,7 @@ class LangModel(Opt):
           h_t.append(h*hmask)
 
         # For the last layer
-        h_tm1_l = h_t[-1]
-        l_tp1 = []
-        for Lparam in self.Lparams:
-          a = T.dot(h_tm1_l, Lparam) +\
-              self.bparams[-1]
-
-          c = T.nnet.softmax(a)
-          l = Lparam[T.argmax(c)]
-          l_tp1.append(l)
-
-        x_tp1 = T.concatenate([x_t[1:], T.concatenate(l_tp1)[None,:]])
-
-        return [x_tp1]+h_t[1:]
+        # TODO
 
     h, _ = theano.scan(
         fn=recur,
@@ -1030,13 +1026,15 @@ class LangModel(Opt):
     g, _ = theano.scan(
         fn=feedback,
         sequences=[],
-        outputs_info=[g_0]+self.h_0)
-    yhat = [h_[1:] for h_ in h[-len(self.libs):]]
+        outputs_info=[g_0]+self.h_0,
+        n_steps=512)
+    yhat = h[-len(self.libs):]
+    y_   = g[0][:,-1]
 
     #-------------------------------------------------------------------
     # Build the cost variable 
     self.crossentropy = T.sum([T.mean(T.nnet.categorical_crossentropy(yhat[i], self.y[:,i]) for i in xrange(len(self.libs)))])
-    self.perplexity = T.exp(self.crossentropy)
+    self.perplexity = T.exp(
 
     self.complexity = 0
     if self.L1reg > 0:
@@ -1059,7 +1057,7 @@ class LangModel(Opt):
     # Activate
     self.i2p = theano.function(
         inputs=[self.idxs]
-        outputs=T.argmax(yhat, axis=1),
+        outputs=phat
         allow_input_downcast=True)
 
     #===================================================================
@@ -1333,7 +1331,7 @@ class Encoder(Opt):
       def Jfunc (yhat, y): return T.nnet.binary_crossentropy(yhat,y)
     elif self.ofunc == 'softmax':
       def ofunc (z):
-        #return T.nnet.softmax(z) # Doesn't work =(
+        #return T.nnet.softmax(2*z) # Doesn't work =(
         e_z = T.exp(z - z.max(axis=0, keepdims=True))
         return e_z / e_z.sum(axis=0, keepdims=True)
       def Jfunc (yhat, y): return T.nnet.categorical_crossentropy(yhat,y)
