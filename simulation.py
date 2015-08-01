@@ -18,47 +18,41 @@ while i < len(args):
     Wlen = int(arg)
   i += 1
 
+vstd = .5
 def relu(x): return np.maximum(x, 0)
 
-#vstd = .5
-#Wvstd = np.arctanh(np.sqrt(1./3))
-#v = np.random.normal(0, vstd, size=vlen)
-#W = np.random.normal(0, Wvstd/vstd*np.sqrt(1./vlen), size=(Wlen,vlen))
-#z = np.dot(W, v)
-#f = np.tanh(z)
-#zstd = np.std(z)
-#fstd = np.std(f)
-#print 'tanh(x)'
-#print 'z)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (Wvstd, zstd, zstd/Wvstd)
-#print 'f)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (vstd, fstd, fstd/vstd)
+Wvstd = np.arctanh(np.sqrt(1./3))
+v = np.random.normal(0, vstd, size=vlen)
+W = np.random.normal(0, Wvstd/vstd*np.sqrt(1./vlen), size=(Wlen,vlen))
+z = np.dot(W, v)
+f = np.tanh(z)
+zstd = np.std(z)
+fstd = np.std(f)
+print 'tanh(x)'
+print 'z)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (Wvstd, zstd, zstd/Wvstd)
+print 'f)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (vstd, fstd, fstd/vstd)
 
-#print np.mean(v), np.std(v), np.std(v)*2-.2**2
+Wvstd = np.sqrt(2*(1-2/np.pi))
+v = relu(np.random.normal(0, vstd, size=vlen))
+W = np.random.normal(0, Wvstd/vstd*np.sqrt(2./vlen), size=(Wlen,vlen))
+z = np.dot(W, v)
+f = relu(z)
+zstd = np.std(z)
+fstd = np.std(f)
+print 'relu(x)'
+print 'z)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (Wvstd, zstd, zstd/Wvstd)
+print 'f)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (vstd, fstd, fstd/vstd)
 
-vstd = .5
-v = (np.random.normal(0, vstd, size=vlen))
-v = v[np.where(v > 0)]
-v_mean = .4*vstd
-v_left = v[np.where(v < v_mean)]-v_mean
-v_right = v[np.where(v > v_mean)]-v_mean
-v_left_count = len(v_left)
-v_right_count = len(v_right)
-v_left_std = (np.sum(v_left**2)/v_left_count)
-v_right_std = (np.sum(v_right**2)/v_right_count)
-print v_left_count, v_left_std
-print v_right_count, v_right_std
-
-
-#Wvstd = 1
-#v = relu(np.random.normal(0, vstd, size=vlen))
-#W = np.random.normal(0, Wvstd/vstd*np.sqrt(2./vlen), size=(Wlen,vlen))
-#z = np.dot(W, v)
-#f = relu(z)
-#zstd = np.std(z)
-#fstd = np.std(f)
-#print 'relu(x)'
-#print 'z)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (Wvstd, zstd, zstd/Wvstd)
-#print 'f)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (vstd, fstd, fstd/vstd)
-
+Wvstd = .5*np.arctanh(np.sqrt(1./3)) + .5*np.sqrt(2*(1-2/np.pi))
+v = np.random.normal(0, vstd, size=vlen)
+W = np.random.normal(0, Wvstd/vstd*np.sqrt(1./vlen), size=(Wlen,vlen))
+z = np.dot(W, v)
+f = .5*np.tanh(z) + .5*relu(z)
+zstd = np.std(z)
+fstd = np.std(f)
+print 'both(x)'
+print 'z)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (Wvstd, zstd, zstd/Wvstd)
+print 'f)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (vstd, fstd, fstd/vstd)
 
 #xs = np.array(np.arange(-4,4,.1))
 #def n(x): return 1./(Wvstd*np.sqrt(np.pi))*np.exp(-x**2 / (2*Wvstd**2))
