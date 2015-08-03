@@ -4,8 +4,8 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 
-vlen = 150
-Wlen = 300
+vlen = 1000
+Wlen = 1000
 i = 0
 args = sys.argv[1:]
 while i < len(args):
@@ -18,59 +18,101 @@ while i < len(args):
     Wlen = int(arg)
   i += 1
 
-vstd = .5
 def relu(x): return np.maximum(x, 0)
+def sigmoid(x): return 1./(1+np.exp(-2*x))
 
-Wvstd = np.arctanh(np.sqrt(1./3))
-v = np.random.normal(0, vstd, size=vlen)
-W = np.random.normal(0, Wvstd/vstd*np.sqrt(1./vlen), size=(Wlen,vlen))
+##  RELU
+a = 1.#*np.sqrt(2)
+Wtarget = 1./np.sqrt(1-2/np.pi)
+v = np.random.normal(0, 1, size=vlen)
+W = np.random.normal(0, Wtarget/np.sqrt(vlen/1.), size=(Wlen,vlen))
 z = np.dot(W, v)
-f = np.tanh(z)
+f = a*relu(z)
 zstd = np.std(z)
 fstd = np.std(f)
-print 'tanh(x)'
-print 'z)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (Wvstd, zstd, zstd/Wvstd)
-print 'f)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (vstd, fstd, fstd/vstd)
+print 'relu(x)\texpected z: %.3f; observed z: %.3f; ratio: %.3f; std: %.3f' % (Wtarget, zstd, zstd/Wtarget, fstd)
 
-Wvstd = np.sqrt(2*(1-2/np.pi))
-v = relu(np.random.normal(0, vstd, size=vlen))
-W = np.random.normal(0, Wvstd/vstd*np.sqrt(2./vlen), size=(Wlen,vlen))
+##  TANH
+a = 2.
+Wtarget = np.arctanh(np.sqrt(1./3))
+v = np.random.normal(0, 1, size=vlen)
+W = np.random.normal(0, Wtarget/np.sqrt(vlen/1.), size=(Wlen,vlen))
 z = np.dot(W, v)
-f = relu(z)
+f = a*np.tanh(z)
 zstd = np.std(z)
 fstd = np.std(f)
-print 'relu(x)'
-print 'z)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (Wvstd, zstd, zstd/Wvstd)
-print 'f)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (vstd, fstd, fstd/vstd)
+print 'tanh(x)\texpected z: %.3f; observed z: %.3f; ratio: %.3f; std: %.3f' % (Wtarget, zstd, zstd/Wtarget, fstd)
 
-Wvstd = .5*np.arctanh(np.sqrt(1./3)) + .5*np.sqrt(2*(1-2/np.pi))
-v = np.random.normal(0, vstd, size=vlen)
-W = np.random.normal(0, Wvstd/vstd*np.sqrt(1./vlen), size=(Wlen,vlen))
+##  SIGMOID
+a = 4.
+Wtarget = np.arctanh(np.sqrt(1./3))
+v = np.random.normal(0, 1, size=vlen)
+W = np.random.normal(0, Wtarget/np.sqrt(vlen/1.), size=(Wlen,vlen))
 z = np.dot(W, v)
-f = .5*np.tanh(z) + .5*relu(z)
+f = a*sigmoid(z)
 zstd = np.std(z)
 fstd = np.std(f)
-print 'both(x)'
-print 'z)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (Wvstd, zstd, zstd/Wvstd)
-print 'f)\texpected: %.3f; observed: %.3f; ratio: %.3f' % (vstd, fstd, fstd/vstd)
+print 'sig(x)\texpected z: %.3f; observed z: %.3f; ratio: %.3f; std: %.3f' % (Wtarget, zstd, zstd/Wtarget, fstd)
 
-#xs = np.array(np.arange(-4,4,.1))
-#def n(x): return 1./(Wvstd*np.sqrt(np.pi))*np.exp(-x**2 / (2*Wvstd**2))
-#
-#plt.figure()
-#def f_(x): return 1/(1+np.exp(-2*x))
-#def g_(x): return 2*(f_(x)*(1-f_(x)))
-#def h_(x): return 2*(g_(x)*(1-f_(x)) - f_(x)*g_(x))
-#def f(x): return np.tanh(x)
-#def g(x): return 1-f(x)**2
-#def h(x): return -2*f(x)*g(x)
-#plt.plot(xs, f_(xs), color='b')
-#plt.plot(xs, g_(xs), color='r')
-#plt.plot(xs, h_(xs), color='g')
-#plt.plot(xs, n(xs), color='k', lw=2)
-#plt.plot(xs, f(xs), color='b', ls='--')
-#plt.plot(xs, g(xs), color='r', ls='--')
-#plt.plot(xs, h(xs), color='g', ls='--')
-#plt.grid()
-#plt.show()
-#
+##  GATE
+a = 4*np.sqrt(5)/5
+Wtarget = np.arctanh(np.sqrt(1./3))
+v = np.random.normal(0, 1, size=Wlen)
+v_i = np.random.normal(0, 1, size=vlen)
+W_i = np.random.normal(0, Wtarget/np.sqrt(vlen/1.), size=(Wlen,vlen))
+z = np.dot(W_i, v_i)
+f = a * v * sigmoid(z)
+zstd = np.std(z)
+fstd = np.std(f)
+print 'gate(x)\texpected z: %.3f; observed z: %.3f; ratio: %.3f; std: %.3f' % (Wtarget, zstd, zstd/Wtarget, fstd)
+
+##  RNN
+outs = [np.zeros(Wlen)]
+for i in xrange(20):
+  x = np.random.randn(vlen)
+  y = outs[-1]
+  W = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(vlen), size=(Wlen,vlen))
+  U = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(Wlen), size=(Wlen,Wlen))
+  outs.append(2*np.tanh((np.dot(W, x) + np.dot(U, y))/np.sqrt(2)))
+  print np.std(outs[-1])
+  
+##  GRU
+outs = [np.random.randn(Wlen)]
+for i in xrange(20):
+  x = np.random.randn(vlen)
+  y = outs[-1]
+  W_h = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(vlen), size=(Wlen,vlen))
+  U_h = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(Wlen), size=(Wlen,Wlen))
+  W_r = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(vlen), size=(Wlen,vlen))
+  U_r = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(Wlen), size=(Wlen,Wlen))
+  W_z = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(vlen), size=(Wlen,vlen))
+  U_z = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(Wlen), size=(Wlen,Wlen))
+  r = 4/np.sqrt(5)*sigmoid((np.dot(W_r, x) + np.dot(U_r, y))/np.sqrt(2))
+  z = sigmoid((np.dot(W_z, x) + np.dot(U_z, y))/np.sqrt(2))
+  h = 2*np.tanh((np.dot(W_h, x) + np.dot(U_h, r*y))/np.sqrt(2))
+  outs.append(((1-z)*4/np.sqrt(5)*y + z*4/np.sqrt(5)*h)/np.sqrt(2))
+  print np.std(r*y), np.std(z*4/np.sqrt(5)*h), np.std((1-z)*4/np.sqrt(5)*y), np.std(outs[-1])
+  raw_input()
+
+##  LSTM
+cells = [np.zeros(Wlen)]
+outs = [np.zeros(Wlen)]
+for i in xrange(20):
+  x = np.random.randn(vlen)
+  y = outs[-1]
+  W_z = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(vlen), size=(Wlen,vlen))
+  U_z = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(Wlen), size=(Wlen,Wlen))
+  W_i = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(vlen), size=(Wlen,vlen))
+  U_i = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(Wlen), size=(Wlen,Wlen))
+  W_f = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(vlen), size=(Wlen,vlen))
+  U_f = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(Wlen), size=(Wlen,Wlen))
+  W_o = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(vlen), size=(Wlen,vlen))
+  U_o = np.random.normal(0, np.arctanh(np.sqrt(1./3))/np.sqrt(Wlen), size=(Wlen,Wlen))
+  z = 2*np.tanh((np.dot(W_z, x) + np.dot(U_z, y))/np.sqrt(2))
+  i = 4/np.sqrt(5)*sigmoid((np.dot(W_i, x) + np.dot(U_i, y))/np.sqrt(2))
+  f = 4/np.sqrt(5)*sigmoid((np.dot(W_f, x) + np.dot(U_f, y))/np.sqrt(2))
+  o = 4/np.sqrt(5)*sigmoid((np.dot(W_o, x) + np.dot(U_o, y))/np.sqrt(2))
+  cells.append((i*z + f*cells[-1])/np.sqrt(2))
+  h = 2*np.tanh(np.arctanh(np.sqrt(1./3))*cells[-1])
+  outs.append(o*h)
+  print np.std(z), np.std(i*z), np.std(f*cells[-2]), np.std(cells[-1]), np.std(h), np.std(outs[-1])
