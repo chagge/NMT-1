@@ -17,18 +17,21 @@ sys.setrecursionlimit(50000)
 #=======================================================================
 # Squared difference
 def squared_difference(output, target):
+  """"""
 
   return T.pow(output-target, 2)/2
 
 #=======================================================================
 # Absolute difference
 def absolute_difference(output, target):
+  """"""
 
   return T.abs_(output-target)
 
-#=====================================================================
+#=======================================================================
 # Worker function
 def func_worker(dataQueue, outQueue, func=None):
+  """"""
 
   store = None
   for datum in iter(dataQueue.get, 'STOP'):
@@ -48,10 +51,12 @@ def func_worker(dataQueue, outQueue, func=None):
 #***********************************************************************
 # A library
 class Library:
+  """"""
 
   #=====================================================================
   # Initialize the model
   def __init__(self, keys, mat, **kwargs):
+    """"""
 
     #-------------------------------------------------------------------
     # Keyword Arguments
@@ -124,72 +129,84 @@ class Library:
   #=====================================================================
   # Get mutability 
   def mutable(self):
+    """"""
 
     return self.mutable
 
   #=====================================================================
   # Get word size
   def wsize(self):
+    """"""
 
     return self.wsize
 
   #=====================================================================
   # Get start string
   def starts(self):
+    """"""
 
     return self.start
 
   #=====================================================================
   # Get stop string 
   def stops(self):
+    """"""
 
     return self.stop
 
   #=====================================================================
   # Get unk string
   def unks(self):
+    """"""
 
     return self.unk
 
   #=====================================================================
   # Get start index
   def starti(self):
+    """"""
 
     return self.s2i(self.starts())
 
   #=====================================================================
   # Get stop index 
   def stopi(self):
+    """"""
 
     return self.s2i(self.stops())
 
   #=====================================================================
   # Get unk index
   def unki(self):
+    """"""
 
-    return self.s2i[self.stops())
+    return self.s2i[self.stops()]
 
   #=====================================================================
   # Get start vector
   def startv(self):
+    """"""
 
     return self.L[self.starti()]
 
   #=====================================================================
   # Get stop vector
   def stopv(self):
+    """"""
 
     return self.L[self.stopi()]
 
   #=====================================================================
   # Get unk vector
   def unkv(self):
+    """"""
 
     return self.L[self.unki()]
 
   #=====================================================================
   # Convert strings to indices
   def s2i(self, strings):
+    """"""
 
     if not hasattr(strings, '__iter__'):
       strings = [strings]
@@ -198,6 +215,7 @@ class Library:
   #=====================================================================
   # Convert indices to strings 
   def i2s(self, indices):
+    """"""
 
     if not hasattr(indices, '__iter__'):
       indices = [indices]
@@ -206,28 +224,33 @@ class Library:
   #=====================================================================
   # Convert strings to vectors 
   def s2v(self, strings):
+    """"""
 
     return self.i2v(np.array(self.s2i(strings)))
 
   #=====================================================================
   # Convert vectors to strings
   def v2s(self, vectors):
+    """"""
 
     return self.i2s(self.v2i(np.array(vectors)))
 
   #=====================================================================
   # Get tensor variable
   def get_subtensor(self, idxs):
+    """"""
 
     return self.L[idxs]
   
 #***********************************************************************
 # An interface for optimization functions
 class Opt:
+  """"""
       
   #=====================================================================
   # Run SGD (with NAG)
   def SGD(self, eta_0=.01, T_eta=1, mu_max=.95, T_mu=1, dropout=1., anneal=0, accel=0):
+    """"""
 
     #-------------------------------------------------------------------
     # Set up the updates & givens
@@ -278,6 +301,7 @@ class Opt:
   #=====================================================================
   # Run AdaGrad (with NAG)
   def AdaGrad(self, eta_0=.01, T_eta=1, mu_max=.95, T_mu=1, epsilon=1e-6, dropout=1., anneal=0, accel=0):
+    """"""
 
     #-------------------------------------------------------------------
     # Set up the updates & givens
@@ -333,6 +357,7 @@ class Opt:
   #=====================================================================
   # Run RMSProp (with NAG)
   def RMSProp(self, eta_0=.01, T_eta=1, rho_0=.9, T_rho=1, mu_max=.95, T_mu=1, epsilon=1e-6, dropout=1., anneal=0, expand=0, accel=0):
+    """"""
 
     #-------------------------------------------------------------------
     # Set up the updates & givens
@@ -387,6 +412,7 @@ class Opt:
   #=====================================================================
   # Run AdaDelta
   def AdaDelta(self, eta_0=1., T_eta=1, rho_0=.9, T_rho=1, epsilon=1e-6, dropout=1., anneal=0, expand=0):
+    """"""
 
     #-------------------------------------------------------------------
     # Set up the updates & givens
@@ -440,6 +466,7 @@ class Opt:
   #=====================================================================
   # Run Adam
   def Adam(self, eta_0=.05, T_eta=1, rho1_0=.9, rho2_0=.99, T_rho=1, epsilon=1e-6, dropout=1., anneal=0, expand=0):
+    """"""
 
     #-------------------------------------------------------------------
     # Set up the updates & givens
@@ -494,6 +521,7 @@ class Opt:
   #=====================================================================
   # Run SMORMS3 (Simon Funk)
   def SMORMS3(self, eta_0=.05, T_eta=1, rho1_0=.9, rho2_0=.99, T_rho=1, epsilon=1e-6, dropout=1., anneal=0, expand=0):
+    """"""
 
     #-------------------------------------------------------------------
     # Set up the updates & givens
@@ -552,10 +580,12 @@ class Opt:
 #***********************************************************************
 # A (multilayer) basic recurrent network encoder
 class LangModel(Opt):
+  """"""
 
   #=====================================================================
   # Initialize the model
   def __init__(self, libs, dims, **kwargs):
+    """"""
 
     #-------------------------------------------------------------------
     # Keyword arguments
@@ -1079,7 +1109,7 @@ class LangModel(Opt):
     #-------------------------------------------------------------------
     # Build the cost variable 
     self.crossentropy = T.sum([T.mean(T.nnet.categorical_crossentropy(yhat[i], self.y[:,i]) for i in xrange(len(self.libs)))])
-    self.perplexity = T.exp(
+    #self.perplexity = T.exp(
 
     self.complexity = 0
     if self.L1reg > 0:
@@ -1125,7 +1155,7 @@ class LangModel(Opt):
     self.update_grad = theano.function(
         inputs=[batchSize]+paramVars,
         outputs=[],
-        updates=[(gparam, gparam + paramVar/batchSize) for gparam, paramVar in zip(self.gparams, paramVars)]
+        updates=[(gparam, gparam + paramVar/batchSize) for gparam, paramVar in zip(self.gparams, paramVars)],
         allow_input_downcast=True)
 
     #===================================================================
@@ -1138,7 +1168,8 @@ class LangModel(Opt):
 
   #=====================================================================
   # Converts a list of strings or string tuples into a vector
-  def s2i(self, strings, reverse=False)
+  def s2i(self, strings, reverse=False):
+    """"""
 
     if reverse:
       strings.reverse()
@@ -1163,12 +1194,14 @@ class LangModel(Opt):
   #=====================================================================
   # Converts a list of strings or string tuples into a vector
   def s2v(self, strings, reverse=False):
+    """"""
 
     return self.i2v(self.s2i(strings, reverse))
 
   #=====================================================================
   # Converts a list of inputs and a list of classes into a prediction
   def s2p(self, strings, idxs, reverse=False):
+    """"""
 
     if reverse:
       idxs.reverse()
@@ -1177,6 +1210,7 @@ class LangModel(Opt):
   #=====================================================================
   # Converts a list of inputs and a list of classes into a cost
   def s2c(self, strings, idxs, reverse=False):
+    """"""
 
     if reverse:
       idxs.reverse()
@@ -1185,6 +1219,7 @@ class LangModel(Opt):
   #=====================================================================
   # Converts a list of inputs and a list of classes into a cost
   def s2g(self, strings, idxs, reverse=False):
+    """"""
 
     if reverse:
       idxs.reverse()
@@ -1193,12 +1228,14 @@ class LangModel(Opt):
   #=====================================================================
   # Batch cost
   def convert_dataset(self, dataset, reverse=False):
+    """"""
 
     return [(self.s2i(datum[0], reverse), datum[1]) for datum in dataset]
 
   #=====================================================================
   # Batch cost
   def cost(self, dataset, workers=2):
+    """"""
 
     cost = 0
     dataQueue = mp.Queue()
@@ -1222,6 +1259,7 @@ class LangModel(Opt):
   #=====================================================================
   # Minibatch grads
   def train(self, dataset, optimizer, batchSize=60, epochs=1, costEvery=None, testset=None, saveEvery=None, savePipe=None, workers=2):
+    """"""
     
     #-------------------------------------------------------------------
     # Saving and printing
@@ -1341,10 +1379,12 @@ class LangModel(Opt):
 #***********************************************************************
 # A (multilayer) basic recurrent network encoder
 class Encoder(Opt):
+  """"""
 
   #=====================================================================
   # Initialize the model
   def __init__(self, libs, dims, **kwargs):
+    """"""
 
     #-------------------------------------------------------------------
     # Keyword arguments
@@ -1750,6 +1790,7 @@ class Encoder(Opt):
   #=====================================================================
   # Converts a list of strings or string tuples into a vector
   def s2i(self, strings, reverse=False)
+    """"""
 
     if reverse:
       strings.reverse()
@@ -1773,12 +1814,14 @@ class Encoder(Opt):
   #=====================================================================
   # Converts a list of strings or string tuples into a vector
   def s2v(self, strings, reverse=False):
+    """"""
 
     return self.i2v(self.s2i(strings, reverse))
 
   #=====================================================================
   # Converts a list of inputs and a list of classes into a prediction
   def s2p(self, strings, idxs, reverse=False):
+    """"""
 
     if reverse:
       idxs.reverse()
@@ -1787,6 +1830,7 @@ class Encoder(Opt):
   #=====================================================================
   # Converts a list of inputs and a list of classes into a cost
   def s2c(self, strings, idxs, reverse=False):
+    """"""
 
     if reverse:
       idxs.reverse()
@@ -1795,6 +1839,7 @@ class Encoder(Opt):
   #=====================================================================
   # Converts a list of inputs and a list of classes into a cost
   def s2g(self, strings, idxs, reverse=False):
+    """"""
 
     if reverse:
       idxs.reverse()
@@ -1803,12 +1848,14 @@ class Encoder(Opt):
   #=====================================================================
   # Batch cost
   def convert_dataset(self, dataset, reverse=False):
+    """"""
 
     return [(self.s2i(datum[0], reverse), datum[1]) for datum in dataset]
 
   #=====================================================================
   # Batch cost
   def cost(self, dataset, workers=2):
+    """"""
 
     cost = 0
     dataQueue = mp.Queue()
@@ -1832,6 +1879,7 @@ class Encoder(Opt):
   #=====================================================================
   # Minibatch grads
   def train(self, dataset, optimizer, batchSize=60, epochs=1, costEvery=None, testset=None, saveEvery=None, savePipe=None, workers=2):
+    """"""
     
     #-------------------------------------------------------------------
     # Saving and printing
@@ -1951,6 +1999,7 @@ class Encoder(Opt):
 #***********************************************************************
 # Test the model
 if __name__ == '__main__':
+  """"""
 
   import sys
 
