@@ -22,10 +22,12 @@ def relu(x): return np.maximum(x, 0)
 def sigmoid(x): return 1./(1+np.exp(-2*x))
 
 ##  RELU
-a = 1.#*np.sqrt(2)
-Wtarget = 1./np.sqrt(1-2/np.pi)
-v = np.random.normal(0, 1, size=vlen)
-W = np.random.normal(0, Wtarget/np.sqrt(vlen/1.), size=(Wlen,vlen))
+#a = 1.
+a = 1./(np.arctanh(np.sqrt(1./3))*np.sqrt(1-2/np.pi))
+#Wtarget = 1./np.sqrt(1-2/np.pi)
+Wtarget = np.arctanh(np.sqrt(1./3))
+v = relu(np.random.normal(0, 1, size=vlen))
+W = np.random.normal(0, Wtarget/np.sqrt(vlen/2.), size=(Wlen,vlen))
 z = np.dot(W, v)
 f = a*relu(z)
 zstd = np.std(z)
@@ -66,6 +68,7 @@ zstd = np.std(z)
 fstd = np.std(f)
 print 'gate(x)\texpected z: %.3f; observed z: %.3f; ratio: %.3f; std: %.3f' % (Wtarget, zstd, zstd/Wtarget, fstd)
 
+raw_input()
 ##  RNN
 outs = [np.zeros(Wlen)]
 for i in xrange(20):
@@ -92,7 +95,6 @@ for i in xrange(20):
   h = 2*np.tanh((np.dot(W_h, x) + np.dot(U_h, r*y))/np.sqrt(2))
   outs.append(((1-z)*4/np.sqrt(5)*y + z*4/np.sqrt(5)*h)/np.sqrt(2))
   print np.std(r*y), np.std(z*4/np.sqrt(5)*h), np.std((1-z)*4/np.sqrt(5)*y), np.std(outs[-1])
-  raw_input()
 
 ##  LSTM
 cells = [np.zeros(Wlen)]
