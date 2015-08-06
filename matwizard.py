@@ -98,27 +98,27 @@ def matwizard(*dims, **kwargs):
   #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   # Rectangular matrix
   if shape == 'rect':
-    mat = np.ones(dims, dtype=np.float32)
-    mat *= np.random.normal(0,1, size=dims).astype(np.float32)
+    mat = np.ones(dims)
+    mat *= np.random.normal(0,1, size=dims)
     if spar < 1:
-      mask = np.random.binomial(1, spar, dims).astype(np.float32)
+      mask = np.random.binomial(1, spar, dims)
       mat *= mask
     elif spar > 1:
-      mask = np.array([np.random.permutation(dims[1]) for i in xrange(dims[0])]).astype(np.float32).less(spar)
+      mask = np.array([np.random.permutation(dims[1]) for i in xrange(dims[0])]).less(spar)
       mat *= mask
   #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   # Upper triangular matrix
   elif shape == 'triang':
-    mat = triangle(dims, dtype=np.float32)
-    mat *= np.random.normal(0,1, size=dims).astype(np.float32)
+    mat = triangle(dims)
+    mat *= np.random.normal(0,1, size=dims)
   #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   # Tridiagonal matrix
   elif shape == 'tridiag':
-    mat = tridiagonal(dims, dtype=np.float32)
+    mat = tridiagonal(dims)
   #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   # Diagonal matrix
   elif shape == 'diag':
-    mat = diagonal(dims, dtype=np.float32)
+    mat = diagonal(dims)
   nonzero_elts = np.sum(np.not_equal(mat, 0), axis=1, keepdims=True)
 
   #---------------------------------------------------------------------
@@ -136,7 +136,7 @@ def matwizard(*dims, **kwargs):
 
   #---------------------------------------------------------------------
   # Return the matrix
-  return mat
+  return mat.astype(np.float32)
 
 #***********************************************************************
 # Test it out

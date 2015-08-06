@@ -12,7 +12,6 @@ sys.setrecursionlimit(50000)
 
 #***********************************************************************
 # Helper functions
-
 #=======================================================================
 # Squared difference
 def squared_difference(output, target):
@@ -26,6 +25,34 @@ def absolute_difference(output, target):
   """"""
 
   return T.abs_(output-target)
+
+#=======================================================================
+# Scaled logistic sigmoid
+def sig(x):
+  """"""
+  
+  return 4*T.nnet.sigmoid(2*x)
+
+#=======================================================================
+# Scaled hyperbolic tangent 
+def tanh(x):
+  """"""
+  
+  return 2*T.tanh(x)
+
+#=======================================================================
+# Scaled rectifier
+def relu(x):
+  """"""
+  
+  return 1/(np.arctanh(np.sqrt(1./3)*np.sqrt(1-2/np.pi)))*T.switch(x > 0, x, 0)
+
+#=======================================================================
+# Interpolater between tanh and relu
+def func(x, s):
+  """"""
+
+  return s*tanh(x) + (1-s)*relu(x)
 
 #=======================================================================
 # Worker function
@@ -112,7 +139,7 @@ class Library:
     #=====================================================================
     # Convert idxs to vectors
     x = T.ivector(name='x')
-    self.idx_to_vec = theano.function(
+    self.idxs_to_vecs = theano.function(
         inputs=[x],
         outputs=self.L[x],
         allow_input_downcast=True)
@@ -120,9 +147,9 @@ class Library:
     #=====================================================================
     # Convert vectors to idxs 
     v = T.fmatrix(name='v')
-    self.vec_to_idx = theano.function(
+    self.vecs_to_idxs = theano.function(
         inputs=[v],
-        outputs=T.argmax(T.sum(T.sqr(self.L[None,:,:] - v[:,None,:]), axis=2), axis=1)
+        outputs=T.argmin(T.sum(squared_difference(self.L[None,:,:], v[:,None,:]), axis=2), axis=1)
         allow_input_downcast=True)
 
   #=====================================================================
@@ -165,21 +192,21 @@ class Library:
   def start_idx(self):
     """"""
 
-    return self.str_to_idx(self.starts())
+    return self.strs_to_idxs(self.starts())
 
   #=====================================================================
   # Get stop index 
   def stop_idx(self):
     """"""
 
-    return self.str_to_idx(self.stops())
+    return self.strs_to_idxs(self.stops())
 
   #=====================================================================
   # Get unk index
   def unk_idx(self):
     """"""
 
-    return self.str_to_idx[self.stops()]
+    return self.strs_to_idxs[self.stops()]
 
   #=====================================================================
   # Get start vector
@@ -204,7 +231,7 @@ class Library:
 
   #=====================================================================
   # Convert strs to idxs
-  def str_to_idx(self, strs):
+  def strs_to_idxs(self, strs):
     """"""
 
     if not hasattr(strs, '__iter__'):
@@ -213,7 +240,7 @@ class Library:
 
   #=====================================================================
   # Convert idxs to strs 
-  def idx_to_str(self, idxs):
+  def idxs_to_strs(self, idxs):
     """"""
 
     if not hasattr(idxs, '__iter__'):
@@ -222,17 +249,17 @@ class Library:
 
   #=====================================================================
   # Convert strs to vectors 
-  def str_to_vec(self, strs):
+  def strs_to_vecs(self, strs):
     """"""
 
-    return self.idx_to_vec(np.array(self.str_to_idx(strs)))
+    return self.idxs_to_vecs(np.array(self.strs_to_idxs(strs)))
 
   #=====================================================================
   # Convert vectors to strs
   def vec_to_str(self, vectors):
     """"""
 
-    return self.idx_to_str(self.vec_to_idx(np.array(vectors)))
+    return self.idxs_to_strs(self.vecs_to_idxs(np.array(vectors)))
 
   #=====================================================================
   # Get tensor variable
@@ -623,12 +650,8 @@ class Encoder(Opt):
         lib = Library(*lib)
       self.libs.append(lib)
       ldims.append(lib.wsize())
-      if reverse:
-        l_0.append(lib.stop_vec())
-        l_max.append(lib.start_vec())
-      else:
-        l_0.append(lib.start_vec())
-        l_max.append(lib.stop_vec())
+      l_0.append(lib.start_idx())
+      l_max.append(lib.stop_idx())
     ldims = np.sum(ldims)*self.window
     l_0 = T.concatenate(l_0, axis=1)
     l_max = T.concatenate(l_max, axis=1)
@@ -649,8 +672,7 @@ class Encoder(Opt):
     self.hparams = []
     self.h_0     = []
     self.hmasks  = []
-    if self.model.endswith('LSTM'):
-      self.c_0   = []
+    self.c_0   = []
 
     for i in xrange(1, len(dims)):
       W = matwizard(dims[i-1], dims[i]*gates)
@@ -662,30 +684,374 @@ class Encoder(Opt):
       self.hparams.append(theano.shared(np.zeros(dims[i]), name='h-%d' % (i+1)))
       self.hmasks.append(theano.shared(np.ones(dims[i]*gates), name='hmask-%d' % (i+1)))
       self.h_0.append(theano.shared(np.zeros(dims[i]), name='h_0-%d' % (i+1)))
-      self.outputs_info = h_0
-      if self.model.endswith('LSTM'):
-        self.c_0.append(theano.shared(np.zeros(dims[i]), name='h_0-%d' % (i+1)))
-        self.outputs_info = h_0 + c_0
-      self.params =\
-          self.Wparams +\
-          self.bparams +\
-          self.hparams +\
-          self.h_0 +\
-          (self.C_0 if self.model.endswith('LSTM') else [])
-      self.gparams = [theano.shared(np.zeros_like(param.get_value(), name='g'+param.name, dtype='float32')) for param in self.params]
-      paramVars =\
-          [T.matrix() for Wparam in self.Wparams] +\
-          [T.vector() for bparam in self.bparams] +\
-          [T.vector() for hparam in self.hparams] +\
-          [T.vector() for h_0_l in self.h_0] +\
-          ([T.vector() for c_0_l in self.c_0] if self.model.endswith('LSTM') else [])
+      self.c_0.append(theano.shared(np.zeros(dims[i]), name='c_0-%d' % (i+1)))
+    self.params =\
+        self.Wparams +\
+        self.bparams +\
+        self.hparams +\
+        self.h_0 +\
+        (self.C_0 if self.model.endswith('LSTM') else [])
+    self.gparams = [theano.shared(np.zeros_like(param.get_value(), name='g'+param.name, dtype='float32')) for param in self.params]
+    paramVars =\
+        [T.matrix() for Wparam in self.Wparams] +\
+        [T.vector() for bparam in self.bparams] +\
+        [T.vector() for hparam in self.hparams] +\
+        [T.vector() for h_0_l in self.h_0] +\
+        ([T.vector() for c_0_l in self.c_0] if self.model.endswith('LSTM') else [])
 
-      #-----------------------------------------------------------------
-      # Build the input/output variables
-      self.idxs = T.imatrix('idxs')
-      self.iparams = []
-      for i, lib in enumerate(self.libs):
-        self.iparams.append(lib.get_subtensor(idxs[:,i]))
+    #-----------------------------------------------------------------
+    # Build the input/output variables
+    self.idxs = T.imatrix('idxs')
+    self.xparams = []
+    for i, lib in enumerate(self.libs):
+      self.xparams.append(lib.get_subtensor(self.idxs[:,i]))
+    x = T.concatenate(self.xparams, axis=1)
+    self.y = T.fmatrix('y')
+
+    #-----------------------------------------------------------------
+    # Build the activation variable
+    #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    if self.model == 'RNN':
+      def recur(i, *hc_tm1):
+        """"""
+
+        h_tm1 = hc_tm1[:len(hc_tm1)/2]
+        c_tm1 = hc_tm1[len(hc_tm1)/2:]
+        h_t   = [self.x[i:i+self.window].flatten()]
+        c_t   = []
+        for h_tm1_l, Wparam, bparam, hparam, hmask in zip(h_tm1, self.Wparams, self.bparams, self.hparams, self.hmasks):
+          xparam = T.concatenate([h_t[-1], h_tm1_l], axis=1)
+          s = sig(hparam)
+
+          a = T.dot(Wparam, xparam) + bparam
+
+          c = func(a, s)
+          h = c*hmask
+
+          c_t.append(c)
+          h_t.append(h)
+
+        return h_t[1:] + c_t
+
+    #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    elif self.model == 'GRU':
+      def recur(i, *hc_tm1):
+        """"""
+
+        h_tm1 = hc_tm1[:len(hc_tm1)/2]
+        c_tm1 = hc_tm1[len(hc_tm1)/2:]
+        h_t   = [self.x[i:i+self.window].flatten()]
+        c_t   = []
+        for h_tm1_l, Wparam, bparam, hparam, hmask in zip(h_tm1, self.Wparams, self.bparams, self.hparams, self.hmasks):
+          sliceLen = Wparam.shape[1]/3
+          xparam = T.concatenate([h_t[-1], h_tm1_l], axis=1)
+          s = sig(hparam)
+
+          zr = T.dot(Wparam[:,sliceLen:], xparam) + bparam[sliceLen:]
+          z  = sig(zr[:sliceLen])
+          r  = sig(zr[sliceLen:])
+          a  = T.dot(Wparam[:,:sliceLen], T.concatenate([xparam[:len(h_t[-1])], xparam[len(h_t[-1]):]*r], axis=1))
+
+          c = z*func(a, s) + (1-z)*h_tm1_l
+          h = c*hmask
+
+          c_t.append(c)
+          h_t.append(h)
+
+        return h_t[1:] + c_t
+
+    #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    elif self.model == 'FastGRU':
+      def recur(i, *hc_tm1):
+        """"""
+
+        h_tm1 = hc_tm1[:len(hc_tm1)/2]
+        c_tm1 = hc_tm1[len(hc_tm1)/2:]
+        h_t   = [self.x[i:i+self.window].flatten()]
+        c_t   = []
+        for h_tm1_l, Wparam, bparam, hparam, hmask in zip(h_tm1, self.Wparams, self.bparams, self.hparams, self.hmasks):
+          sliceLen = Wparam.shape[1]/3
+          xparam = T.concatenate([h_t[-1], h_tm1_l], axis=1)
+          s = sig(hparam)
+
+          azr = T.dot(Wparam, xparam) + bparam
+          a   = func(azr[:sliceLen], s)
+          z   = sig(zr[sliceLen:2*sliceLen])
+          r   = sig(zr[2*sliceLen:])
+
+          c = z*a + (1-z)*r*h_tm1_l
+          h = c*hmask
+
+          c_t.append(c)
+          h_t.append(h)
+
+        return h_t[1:] + c_t
+
+    #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    elif self.model == 'LSTM':
+      def recur(i, *hc_tm1):
+        """"""
+
+        h_tm1 = hc_tm1[:len(hc_tm1)/2]
+        c_tm1 = hc_tm1[len(hc_tm1)/2:]
+        h_t   = [self.x[i:i+self.window].flatten()]
+        c_t   = []
+        for h_tm1_l, c_tm1_l, Wparam, bparam, hparam, hmask in zip(h_tm1, c_tm1, self.Wparams, self.bparams, self.hparams, self.hmasks):
+          sliceLen = Wparam.shape[1]/4
+          xparam = T.concatenate([h_t[-1], h_tm1_l], axis=1)
+          s = sig(hparam)
+
+          aifo = T.dot(Wparam, xparam) + bparam
+          a    = func(aifo[:sliceLen], s)
+          i    = sig(aifo[sliceLen:2*sliceLen])
+          f    = sig(aifo[2*sliceLen:3*sliceLen])
+          o    = sig(aifo[3*sliceLen:])
+
+          c = i*a + f*c_tm1_l
+          h = func(c*o, s)*hmask
+
+          c_t.append(c)
+          h_t.append(h)
+
+        return h_t[1:] + c_t
+
+    #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    elif self.model == 'FastLSTM':
+      def recur(i, *hc_tm1):
+        """"""
+
+        h_tm1 = hc_tm1[:len(hc_tm1)/2]
+        c_tm1 = hc_tm1[len(hc_tm1)/2:]
+        h_t   = [self.x[i:i+self.window].flatten()]
+        c_t   = []
+        for h_tm1_l, c_tm1_l, Wparam, bparam, hparam, hmask in zip(h_tm1, c_tm1, self.Wparams, self.bparams, self.hparams, self.hmasks):
+          sliceLen = Wparam.shape[1]/3
+          xparam = T.concatenate([h_t[-1], h_tm1_l], axis=1)
+          s = sig(hparam)
+
+          azo = T.dot(Wparam, xparam) + bparam
+          a   = func(aifo[:sliceLen], s)
+          z   = sig(aifo[sliceLen:2*sliceLen])
+          o   = sig(aifo[2*sliceLen:])
+
+          c = z*a + (1-z)*c_tm1_l
+          h = func(c*o, s)*hmask
+
+          c_t.append(c)
+          h_t.append(h)
+
+        return h_t[1:] + c_t
+
+    h, _ = theano.scan(
+        fn=recur,
+        sequences=T.arange(self.x.shape[0]-(self.window-1)),
+        outputs_info = self.h_0 + self.c_0)
+
+    yhat = h[-1]
+
+    #-------------------------------------------------------------------
+    # Build the cost variable
+    # TODO integrate this with the library class
+    self.error = T.mean(squared_difference(yhat[i], self.y[i]))
+
+    self.complexity = 0
+    if self.L1reg > 0:
+      self.complexity += self.L1reg*T.sum([T.sum(T.abs_(Wparam)) for Wparam in self.Wparams])
+    if self.L2reg > 0:
+      self.complexity += self.L2reg*T.sum([T.sum(T.sqr(Wparam)) for Wparam in self.Wparams])
+    self.cost = self.error + self.complexity
+
+    #===================================================================
+    # Activate
+    self.idxs_to_vecs = theano.function(
+        inputs=[self.idxs],
+        outputs=yhat,
+        allow_input_downcast=True)
+
+    #===================================================================
+    # Error
+    self.idxs_to_err = theano.function(
+        inputs=[self.idxs, self.y],
+        outputs=self.error,
+        allow_input_downcast=True)
+
+    #===================================================================
+    # Complexity
+    self.idxs_to_comp = theano.function(
+        inputs=[self.idxs],
+        outputs=self.complexity,
+        allow_input_downcast=True)
+
+    #===================================================================
+    # Cost
+    self.idxs_to_cost = theano.function(
+        inputs=[self.idxs, self.y],
+        outputs=self.cost,
+        allow_input_downcast=True)
+
+    #===================================================================
+    # Gradients
+    self.idxs_to_grads = theano.function(
+        inputs=[self.idxs, self.y],
+        outputs=[self.cost] + T.grad(self.cost, self.params),
+        allow_input_downcast=True)
 
 
+    #===================================================================
+    # Reset gradients
+    self.reset_grad = theano.function(
+        inputs=[],
+        outputs=[],
+        updates=[(gparam, 0*gparam) for gparam in self.gparams],
+        allow_input_downcast=True)
 
+  #=====================================================================
+  # Converts a dataset into the expected format
+  def convert_dataset(self, dataset):
+    """"""
+
+    return [(self.strs_to_idxs(datum[0]), datum[1]) for datum in dataset]
+
+  #=====================================================================
+  # Converts a list of strings or string tuples into a matrix
+  def strs_to_idxs(self, strings):
+    """"""
+
+    if self.reverse:
+      strings = list(reversed(strings))
+      begins  = tuple([lib.stop  for lib in self.libs])
+      ends    = tuple([lib.start for lib in self.libs])
+    else:
+      begins  = tuple([lib.start for lib in self.libs])
+      ends    = tuple([lib.stop  for lib in self.libs])
+
+    # Pad the beginning
+    nbegins = 0
+    while tuple(strings[nbegins]) == begins:
+      nbegins += 1
+    strings = [begins]*(self.window-nbegins) + strings
+
+    # Pad the end
+    if tuple(strings[0]) != ends:
+      strings.insert(ends)
+
+    if not isinstance(strings[0], (tuple, list)):
+      return self.libs[0].strs_to_idxs(strings)
+    else:
+      return np.concatenate([lib.strs_to_idxs([string[i] for string in strings]) for i, lib in enumerate(self.libs)], axis=1)
+
+  #=====================================================================
+  # Pad a list of strings or string tuples
+  def pad_strs(self, strings):
+    """"""
+
+    if self.reverse:
+      begins = tuple([lib.stop_str()  for lib in self.libs])
+      ends   = tuple([lib.start_str() for lib in self.libs])
+    else:
+      begins = tuple([lib.start_str() for lib in self.libs])
+      ends   = tuple([lib.stop_str()  for lib in self.libs])
+
+    # Pad the beginning
+    nbegins = 0
+    while tuple(strings[nbegins]) == begins:
+      nbegins += 1
+    strings = [begins]*(self.window-nbegins) + strings
+
+    # Pad the end
+    if tuple(strings[0]) != ends:
+      strings.insert(ends)
+
+    return strings
+
+  #=====================================================================
+  # Pad a matrix of indices
+  def pad_idxs(self, indices):
+    """"""
+
+    if self.reverse:
+      begins = np.concatenate([lib.stop_idx()  for lib in self.libs])
+      ends   = np.concatenate([lib.start_idx() for lib in self.libs])
+    else:
+      begins = np.concatenate([lib.start_idx() for lib in self.libs])
+      ends   = np.concatenate([lib.stop_idx()  for lib in self.libs])
+
+    # Calculate the beginning padding
+    nbegins = 0
+    while np.equal(indices[nbegins], begins):
+      nbegins += 1
+
+    # Calculate the ending padding
+    nends = 0
+    if np.equal(indices[-1], ends):
+      nends += 1
+    a = np.empty(len(indices)+nbegins+end)
+    a[0:(self.window-nbegins)] = begins
+    a[-1-(1-nends):-1] = ends
+    
+    return a
+
+  #=====================================================================
+  # Pad a matrix of vectors 
+  def pad_vecs(self, vectors):
+    """"""
+
+    if self.reverse:
+      begins = np.concatenate([lib.stop_vec()  for lib in self.libs])
+      ends   = np.concatenate([lib.start_vec() for lib in self.libs])
+    else:
+      begins = np.concatenate([lib.start_vec() for lib in self.libs])
+      ends   = np.concatenate([lib.stop_vec()  for lib in self.libs])
+
+    # Calculate the beginning padding
+    nbegins = 0
+    while np.equal(vectors[nbegins], begins):
+      nbegins += 1
+
+    # Calculate the ending padding
+    nends = 0
+    if np.equal(vectors[-1], ends):
+      nends += 1
+    a = np.empty(len(vectors)+nbegins+end)
+    a[0:(self.window-nbegins)] = begins
+    a[-1-(1-nends):-1] = ends
+    
+    return a
+
+  #=====================================================================
+  # Pad a list of strings or string tuples
+  def unpad_strs(self, strings):
+    """"""
+
+    #if self.reverse:
+    #  begins = tuple([lib.stop_str()  for lib in self.libs])
+    #  ends   = tuple([lib.start_str() for lib in self.libs])
+    #else:
+    #  begins = tuple([lib.start_str() for lib in self.libs])
+    #  ends   = tuple([lib.stop_str()  for lib in self.libs])
+
+    ## Pad the beginning
+    #nbegins = 0
+    #while tuple(strings[nbegins]) == begins:
+    #  nbegins += 1
+    #strings = [begins]*(self.window-nbegins) + strings
+
+    ## Pad the end
+    #if tuple(strings[0]) != ends:
+    #  strings.insert(ends)
+
+    #return strings
+
+
+    pass
+  def unpad_idxs(self, indices):
+    pass
+  def unpad_vecs(self, vectors):
+    pass
+
+  #=====================================================================
+  # Converts a list of input strings or string tuples and output vectors into a cost
+  def strs_to_cost(self, strings, vectors):
+    """"""
+
+    #TODO Question: how much preprocessing should we assume? Should we assume reversed inputs or reverse the inputs on the fly?
