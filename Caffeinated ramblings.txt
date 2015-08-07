@@ -1,0 +1,17 @@
+0. I love coffee. It makes me feel happy and I like my brain when it's on it.
+
+1. I should start a little journal of the things my mind drifts to when I'm doped up on caffeine. Hopefully doing so will help me get those thoughts out of my brain and help me focus on the task I originally purchased the caffeine to help me accomplish.
+
+2. When I go home I should tell Maddy my philosophy on life. "Maddy, what are the two most valuable things you own?" "Tim stop trying to be deep and just tell me what you want to tell me." "Your brain and your body. Most drugs other than caffeine and marijuana will seriously fuck up at least one of the two if you aren't extremely careful. That is to just to reinforce your decision to stick with pot and not even tempt yourself with anything else, except alcohol, which you should still be cautious with."
+
+3. I strongly believe in freemium software. It's "free" in two ways--first, you don't necessarily have to pay for it, making it free monetarily, but it's also free in that you're free to stop paying for it if you want without being cut off from the system altogether. It's a business model that works great for businesses and consumers--the consumers have the freedom to choose whether or not they pay for it and are free to switch back and forth as much as they want, and the businesses rope people in by providing them with useful basic features and then often get them to upgrade after getting a feel for the software.
+
+4. My approach to designing LSTMs is kind of like adding a system of weights and pulleys to a bonsai tree--in theory, they should give the network some nice properties without really inhibiting its ability to grow, but it'll be interesting to see how it actually turns out.
+
+5. Stats for people who have no idea what they're doing in three easy steps:
+  1) Run a large simulation (like a few thousand randomly generated data points) in R, matlab, or python
+  2) If you're getting an obviously wrong answer, find something you didn't take the square root of and take the square root of it
+  3) If you're still getting the wrong answer and there isn't anything else to take the square root of, find something that isn't over sqrt(2) and divide it by sqrt(2)
+  And that's it! If you follow the above steps, you're guaranteed to find the right answer 90% of the time. Magic!
+
+6. One of my biggest character flaws is that I can be kind of pretentious. But I *know* that I'm pretentious, which makes me better than other pretentious people. Right?
