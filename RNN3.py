@@ -4,13 +4,15 @@ import numpy as np
 from matwizard import matwizard
 import theano
 import theano.tensor as T
-from theano.tensor.shared_randomstreams import RandomStreams
 import cPickle as pkl
 import multiprocessing as mp
 import sys
 sys.setrecursionlimit(50000)
+from theano.tensor.shared_randomstreams import RandomStreams
+srng = RandomStreams()
 #TODO fix dropout (apply it when calculating grads, not in the optimization funx)
 #TODO fix momentum (apply it when calculating grads, not in the optimization funx)
+#TODO build word2vec and/or GloVe capabilities into Library
 
 #***********************************************************************
 # Helper functions
@@ -77,301 +79,9 @@ def func_worker(dataQueue, outQueue, func=None):
   return True
 
 #***********************************************************************
-# An interface for sparse optimizaiton functions
-class SpOpt:
-      
-  #=====================================================================
-  # Run SGD (with NAG)
-  def SGD(self, eta_0=.01, T_eta=1, mu_max=.95, T_mu=1, dropout=1., anneal=0, accel=0):
-    """"""
-
-    #-------------------------------------------------------------------
-    # Set up the updates & givens
-    updates = []
-    givens = []
-
-    #-------------------------------------------------------------------
-    # Set up a variable to keep track of the iteration
-    tau = theano.shared(np.float32(0), name='tau')
-    updates.extend([(tau, tau+1)])
-
-    #-------------------------------------------------------------------
-    # Set the annealing/acceleration schedule
-    eta = eta_0*T.pow(T_eta/(tau+T_eta), anneal)
-    mu  = mu_max*(1-T.pow(T_mu/(tau+T_mu), accel))
-
-    #-------------------------------------------------------------------
-    # Initialize stored vectors
-    vL = theano.shared(np.zeros_like(self.L.get_value()), name='vL')
-
-    #-------------------------------------------------------------------
-    # Subtense the tensors
-    gidxs = T.ivector('gidxs')
-    x = self.L[gidxs]
-    gx = self.gL[gidxs]
-    vx = vL[gidxs]
-    grad_norm  = T.sqrt(T.sum(T.sqr(gx)))
-    not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
-
-    #-------------------------------------------------------------------
-    # Build up the updates
-    muvx = mu*vx
-    updates.append(T.inc_subtensor(x, T.switch(not_finite, -.9*x, -eta*gx)))
-    updates.append(T.set_subtensor(vx, T.switch(not_finite, np.float32(0), muvx - eta*gx)))
-    givens.append(T.inc_subtensor(x, muvx))
-
-    #-------------------------------------------------------------------
-    # Compile the sgd function
-    opt = theano.function(
-        inputs=[gidxs],
-        outputs=[],
-        givens=givens,
-        updates=updates,
-        allow_input_downcast=True)
-
-    #-------------------------------------------------------------------
-    # Return the compiled function
-    print 'SGD function compiled'
-    return opt
-
-  #=====================================================================
-  # Run AdaGrad (with NAG)
-  def AdaGrad(self, eta_0=.01, T_eta=1, mu_max=.95, T_mu=1, epsilon=1e-6, dropout=1., anneal=0, accel=0):
-    """"""
-
-    #-------------------------------------------------------------------
-    # Set up the updates & givens
-    updates = []
-    givens = []
-
-    #-------------------------------------------------------------------
-    # Set up a variable to keep track of the iteration
-    tau = theano.shared(np.cast[self.dtype](0), name='tau')
-    updates.extend([(tau, tau+1)])
-
-    #-------------------------------------------------------------------
-    # Set the annealing/acceleration schedule
-    eta = eta_0*T.pow(T_eta/(tau+T_eta), anneal)
-    mu  = mu_max*(1-T.pow(T_mu/(tau+T_mu), accel))
-
-    #-------------------------------------------------------------------
-    # Initialize stored vectors
-    g2L = theano.shared(np.zeros_like(self.L.get_value()), name='g2L')
-    vL  = theano.shared(np.zeros_like(self.L.get_value()), name='vL')
-
-    #-------------------------------------------------------------------
-    # Subtense the tensors
-    gidxs = T.ivector('gidxs')
-    x   = self.L[gidxs]
-    gx  = self.gL[gidxs]
-    vx  = vL[gidxs]
-    g2x = g2L[gidxs]
-    grad_norm  = T.sqrt(T.sum(T.sqr(gx)))
-    not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
-
-    #-------------------------------------------------------------------
-    # Build up the updates
-    g2x_t = g2x + T.sqr(gx)
-    deltax_t = gx/T.sqrt(g2x_t+epsilon)
-    muvx = mu*vx
-
-    updates.append(T.inc_subtensor(x, T.switch(not_finite, -.9*gx, -eta*deltax_t)))
-    updates.append(T.set_subtensor(g2x, T.switch(not_finite, np.float32(0), g2x_t)))
-    updates.append(T.set_subtensor(vx, T.switch(not_finite, np.float32(0), muvx - eta*deltax_t)))
-    givens.append(T.inc_subtensor(x, muvx))
-
-    #-------------------------------------------------------------------
-    # Compile the sgd function
-    opt = theano.function(
-        inputs=[gidxs],
-        outputs=[],
-        givens=givens,
-        updates=updates,
-        allow_input_downcast=True)
-
-    #-------------------------------------------------------------------
-    # Return the compiled function
-    print 'AdaGrad function compiled'
-    return opt 
-
-  #=====================================================================
-  # Run RMSProp (with NAG)
-  def RMSProp(self, eta_0=.01, T_eta=1, rho_0=.9, T_rho=1, mu_max=.95, T_mu=1, epsilon=1e-6, dropout=1., anneal=0, expand=0, accel=0):
-    """"""
-
-    #-------------------------------------------------------------------
-    # Set up the updates & givens
-    updates = []
-    givens = []
-
-    #-------------------------------------------------------------------
-    # Set up a variable to keep track of the iteration
-    tau = theano.shared(np.cast[self.dtype](0.), name='tau')
-    updates.extend([(tau, tau+1)])
-
-    #-------------------------------------------------------------------
-    # Set the annealing/expansion schedule
-    eta = eta_0*T.pow(T_eta/(tau+T_eta), anneal)
-    rho = rho_0*(1-T.pow(T_rho/(tau+T_rho), expand))
-    mu  = mu_max*(1-T.pow(T_mu/(tau+T_mu), accel))
-
-    #-------------------------------------------------------------------
-    # Initialize stored vectors
-    g2L = theano.shared(np.zeros_like(self.L.get_value(), dtype='float32'), name='g2L')
-    vL  = theano.shared(np.zeros_like(self.L.get_value(), dtype='float32'), name='vL')
-
-    #-------------------------------------------------------------------
-    # Subtense the tensors
-    gidxs    = T.ivector('gidxs')
-    x   = self.L[gidxs]
-    gx  = self.gL[gidxs]
-    vx  = vL[gidxs]
-    g2x = g2L[gidxs]
-    grad_norm  = T.sqrt(T.sum(T.sqr(gx)))
-    not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
-
-    #-------------------------------------------------------------------
-    # Build up the updates
-    g2x_t = rho*g2x + (1-rho)*T.sqr(gx)
-    deltax_t = gx/T.sqrt(g2x+epsilon)
-    muvx = mu*vx
-
-    updates.append(T.inc_subtensor(x, T.switch(not_finite, -.9*gx, -eta*deltax_t)))
-    updates.append(T.set_subtensor(g2x, T.switch(not_finite, np.float32(0), g2x_t)))
-    updates.append(T.set_subtensor(vx, T.switch(not_finite, np.float32(0), muvx - eta*deltax_t)))
-    givens.append(T.inc_subtensor(x, muvx))
-
-    #-------------------------------------------------------------------
-    # Compile the rmsprop function
-    opt = theano.function(
-        inputs=[gidxs],
-        outputs=[],
-        givens=givens,
-        updates=updates,
-        allow_input_downcast=True)
-
-    print 'RMSProp function compiled'
-    return opt
-  
-  #=====================================================================
-  # Run AdaDelta
-  def AdaDelta(self, eta_0=1., T_eta=1, rho_0=.9, T_rho=1, epsilon=1e-6, dropout=1., anneal=0, expand=0):
-    """"""
-
-    #-------------------------------------------------------------------
-    # Set up the updates & givens
-    updates = []
-    givens = []
-
-    #-------------------------------------------------------------------
-    # Set up a variable to keep track of the iteration
-    tau = theano.shared(np.cast[self.dtype](0.), name='tau')
-    updates.extend([(tau, tau+1)])
-
-    #-------------------------------------------------------------------
-    # Set the annealing/expansion schedule
-    eta = eta_0*T.pow(T_eta/(tau+T_eta), anneal)
-    rho = rho_0*(1-T.pow(T_rho/(tau+T_rho), expand))
-
-    #-------------------------------------------------------------------
-    # Initialize stored vectors
-    g2L = theano.shared(np.zeros_like(self.L.get_value(), dtype='float32'), name='g2L')
-    delta2L = theano.shared(np.zeros_like(self.L.get_value(), dtype='float32'), name='delta2L')
-    vL  = theano.shared(np.zeros_like(self.L.get_value(), dtype='float32'), name='vL')
-
-    #-------------------------------------------------------------------
-    # Subtense the tensors
-    gidxs    = T.ivector('gidxs')
-    x       = self.L[gidxs]
-    gx      = self.gL[gidxs]
-    g2x     = g2L[gidxs]
-    delta2x = delta2L[gidxs]
-    grad_norm  = T.sqrt(T.sum(T.sqr(gx)))
-    not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
-
-    #-------------------------------------------------------------------
-    # Build up the updates
-    g2x_t = rho*g2x + (1-rho)*T.sqr(gx)
-    deltax_t = gx*T.sqrt(delta2x+epsilon)/T.sqrt(g2x+epsilon)
-    delta2x_t = rho*delta2x + (1-rho)*T.sqr(deltax_t)
-    
-    updates.append(T.inc_subtensor(x, T.switch(not_finite, -.9*x, -eta*deltax_t)))
-    updates.append(T.set_subtensor(delta2x, T.switch(not_finite, np.float32(0), delta2x_t)))
-    updates.append(T.set_subtensor(g2x, T.switch(not_finite, np.float32(0), g2x_t)))
-
-    #-------------------------------------------------------------------
-    # Compile the adadelta function
-    opt = theano.function(
-        inputs=[gidxs],
-        outputs=[],
-        givens=givens,
-        updates=updates,
-        allow_input_downcast=True)
-
-    print 'AdaDelta function compiled'
-    return opt
-
-  #=====================================================================
-  # Run Adam
-  def Adam(self, eta_0=.05, T_eta=1, rho1_0=.9, rho2_0=.99, T_rho=1, epsilon=1e-6, dropout=1., anneal=0, expand=0):
-    """"""
-
-    #-------------------------------------------------------------------
-    # Set up the updates & givens
-    updates = []
-    givens = []
-
-    #-------------------------------------------------------------------
-    # Set up a variable to keep track of the iteration
-    tau = theano.shared(np.cast[self.dtype](0.), name='tau')
-    updates.extend([(tau, tau+1)])
-
-    #-------------------------------------------------------------------
-    # Set the annealing schedule
-    eta = eta_0*T.pow(T_eta/(tau+T_eta), anneal)
-    rho1 = rho1_0*(1-T.pow(T_rho/(tau+T_rho), expand))
-    rho2 = rho2_0*(1-T.pow(T_rho/(tau+T_rho), expand))
-
-    #-------------------------------------------------------------------
-    # Initialize stored vectors
-    mL = theano.shared(np.zeros_like(self.L.get_value(), dtype='float32'), name='mL')
-    vL = theano.shared(np.zeros_like(self.L.get_value(), dtype='float32'), name='vL')
-
-    #-------------------------------------------------------------------
-    # Subtense the tensors
-    gidxs = T.ivector('gidxs')
-    x = self.L[gidxs]
-    gx = self.gL[gidxs]
-    mx = mL[gidxs]
-    vx = vL[gidxs]
-    grad_norm  = T.sqrt(T.sum(T.sqr(gx)))
-    not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
-
-    #-------------------------------------------------------------------
-    # Build up the updates 
-    mx_t = rho1*mx + (1-rho1)*gx) / (1-rho1)
-    vx_t = rho2*vx + (1-rho2)*T.sqr(gx) / (1-rho2)
-    deltax_t = mx_t / (T.sqrt(vx) + epsilon)
-
-    updates.append(T.inc_subtensor(x, T.switch(not_finite, -.9*x, -eta*deltax_t)))
-    updates.append(T.set_subtensor(mx, T.switch(not_finite, np.float32(0), mx_t)))
-    updates.append(T.set_subtensor(vx, T.switch(not_finite, np.float32(0), vx_t)))
-
-    #-------------------------------------------------------------------
-    # Compile the adam function
-    opt = theano.function(
-        inputs=[],
-        outputs=[],
-        givens=givens,
-        updates=updates,
-        allow_input_downcast=True)
-    
-    print 'Adam function compiled'
-    return opt 
-
-#***********************************************************************
 # A library
-class Library(SpOpt):
+# TODO build in word2vec and/or GloVe capabilities 
+class Library():
   """"""
 
   #=====================================================================
@@ -397,13 +107,15 @@ class Library(SpOpt):
       self.unk = '<UNK>'
 
     if 'mutable' in kwargs:
-      self.mutable = kwargs['mutable']
+      self._mutable = kwargs['mutable']
     else:
-      self.mutable = True
+      self._mutable = True
 
+    #-------------------------------------------------------------------
+    # Set up the matrix
     if isinstance(mat, int):
       mat = np.random.randn(len(keys), mat).astype('float32')
-      self.mutable = True
+      self._mutable = True
     else:
       assert self.start in keys
       assert self.stop in keys
@@ -411,6 +123,8 @@ class Library(SpOpt):
       mat = mat.astype('float32')
     self._wsize = mat.shape[1]
 
+    #-------------------------------------------------------------------
+    # Set up the access keys
     if isinstance(keys, (tuple, list, set)):
       keys = set(keys)
       keys.add(self.start)
@@ -430,6 +144,9 @@ class Library(SpOpt):
         self.idxs = keys
         self.strs = {v:k for k, v in keys.iteritems()}
 
+    #-------------------------------------------------------------------
+    # Set up the Theano variables
+    self.hmask = theano.shared(np.ones(self._wsize, dtype='float32'))
     self.L = theano.shared(mat)
     self.gL = theano.shared(zeros_like(mat, dtype='float32'))
     self._gidxs = set()
@@ -451,7 +168,7 @@ class Library(SpOpt):
         allow_input_downcast=True)
 
     #=====================================================================
-    # Convert vectors to idxs 
+    # Update gradients
     batchSize = T.scalar('batchSize')
     gxparams = T.matrix('gxparams')
     gidxs = T.vector('gidxs')
@@ -466,8 +183,15 @@ class Library(SpOpt):
     self.reset_grads = theano.function(
         inputs=[gidxs],
         outputs=[],
-        updates=set_subtensor(self.gL[gidxs], np.float32(0)*self.gL[gidxs])
+        updates=set_subtensor(self.gL[gidxs], np.float32(0)*self.gL[gidxs]),
         allow_input_downcast=True)
+
+  #=====================================================================
+  # Update gradients
+  def update_gidxss(self, batchSize, grad, gidxs):
+    """"""
+
+    self.update_grads(batchSize, grad, gidxs)
 
   #=====================================================================
   # Update gradients
@@ -475,7 +199,6 @@ class Library(SpOpt):
     """"""
 
     self.update_grads(batchSize, grad, gidxs)
-    self._gidxs.update(gidxs)
 
   #=====================================================================
   # Reset gradients
@@ -488,6 +211,7 @@ class Library(SpOpt):
   #=====================================================================
   # Get the gradient update indices in array form
   def gidxs(self):
+    """"""
 
     return np.array(self._gidxs, dtype='int32')
 
@@ -496,7 +220,7 @@ class Library(SpOpt):
   def mutable(self):
     """"""
 
-    return self.mutable
+    return self._mutable
 
   #=====================================================================
   # Get word size
@@ -618,38 +342,73 @@ class Opt:
     """"""
 
     #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta_0  = np.float32(eta_0)
+    T_eta  = np.float32(T_eta)
+    mu_max = np.float32(mu_max)
+    T_mu   = np.float32(T_mu)
+    anneal = np.float32(anneal)
+    accel  = np.float32(accel)
+    
+    #-------------------------------------------------------------------
     # Set up the updates & givens
-    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams)))
+    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams + self.sgparams)))
     not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
     updates = []
     givens = []
 
     #-------------------------------------------------------------------
     # Set up a variable to keep track of the iteration
-    tau = theano.shared(np.cast[self.dtype](0), name='tau')
-    updates.extend([(tau, tau+1)])
+    tau = theano.shared(np.float32(0), name='tau')
+    updates.extend([(tau, tau+np.float32(1))])
 
     #-------------------------------------------------------------------
     # Set the annealing/acceleration schedule
     eta = eta_0*T.pow(T_eta/(tau+T_eta), anneal)
-    mu  = mu_max*(1-T.pow(T_mu/(tau+T_mu), accel))
-
-    for x, gx in self.params, self.gparams:
-      #-----------------------------------------------------------------
-      # Initialize stored vectors
-      vx = theano.shared(np.zeros_like(x.get_value()), name='v%s' % x.name)
-      muvx = mu*vx
-
-      #-----------------------------------------------------------------
-      # Build up the updates
-      updates.append((x, T.switch(not_finite, .1*x, x - eta*gx)))
-      updates.append((vx, T.switch(not_finite, np.float32(0), muvx - eta*gx)))
-      givens.append((x, x+muvx))
+    mu  = mu_max*(np.float32(1)-T.pow(T_mu/(tau+T_mu), accel))
 
     #-------------------------------------------------------------------
+    # Regular parameters
+    for x, gx in zip(self.params, self.gparams):
+      vx = theano.shared(np.zeros_like(x.get_value()), name='v%s' % x.name)
+
+      updates.append((x, T.switch(not_finite, np.float32(.1)*x, x - eta*gx)))
+      updates.append((vx, T.switch(not_finite, np.float32(0), mu*vx - eta*gx)))
+      givens.append((x, x + mu*vx))
+      
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    gidxs = []
+    for L, gL in zip(self.sparams, self.gsparams):
+      vL = theano.shared(np.zeros_like(L.get_value()), name='v%s' % L.name)
+      
+      gidxs.append(T.ivector('gidxs'))
+      x = self.L[gidxs[-1]]
+      gx = self.gL[gidxs[-1]]
+      vx = vL[gidxs[-1]]
+      
+      updates.append(T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*x, -eta*gx)))
+      updates.append(T.set_subtensor(vx, T.switch(not_finite, np.float32(0), mu*vx - eta*gx)))
+      givens.append(T.inc_subtensor(x, mu*vx))
+
+    #-------------------------------------------------------------------
+    # Set up the dropout
+    if dropout < 1:
+      for hmask in hmasks:
+        givens.append((hmask, srng.binomial(hmask.shape, 1, dropout, dtype='float32')))
+
+    #-------------------------------------------------------------------
+    # Compile the gradient function
+    grads = theano.function(
+        inputs=[self.x, self.y],
+        outputs=[self.cost, self.x]+T.grad(self.cost, self.params+self.sparams),
+        givens=givens,
+        allow_input_downcast=True)
+        
+    #-------------------------------------------------------------------
     # Compile the sgd function
-    sgd = theano.function(
-        inputs=[],
+    opt = theano.function(
+        inputs=gidxs,
         outputs=[],
         givens=givens,
         updates=updates,
@@ -658,63 +417,7 @@ class Opt:
     #-------------------------------------------------------------------
     # Return the compiled function
     print 'SGD function compiled'
-    return sgd
-
-  #=====================================================================
-  # Run AdaGrad (with NAG)
-  def AdaGrad(self, eta_0=.01, T_eta=1, mu_max=.95, T_mu=1, epsilon=1e-6, dropout=1., anneal=0, accel=0):
-    """"""
-
-    #-------------------------------------------------------------------
-    # Set up the updates & givens
-    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams)))
-    not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
-    updates = []
-    givens = []
-
-    #-------------------------------------------------------------------
-    # Set up a variable to keep track of the iteration
-    tau = theano.shared(np.cast[self.dtype](0), name='tau')
-    updates.extend([(tau, tau+1)])
-
-    #-------------------------------------------------------------------
-    # Set the annealing/acceleration schedule
-    eta = eta_0*T.pow(T_eta/(tau+T_eta), anneal)
-    mu  = mu_max*(1-T.pow(T_mu/(tau+T_mu), accel))
-
-    #-------------------------------------------------------------------
-    # Initialize stored vectors
-    g2params_tm1   = [theano.shared(np.zeros_like(param.get_value()), name='g2%s' % param.name) for param in self.params]
-    vparams = [theano.shared(np.zeros_like(param.get_value()), name='v%s' % param.name) for param in self.params]
-
-    #-------------------------------------------------------------------
-    # Build up the updates
-    g2params_t    = [g2param_tm1 + (gparam_t**2) for g2param_tm1, gparam_t in zip(g2params_tm1, self.gparams)]
-    deltaparams_t = [1/T.sqrt(g2param_t+epsilon)*gparam for g2param_t, gparam in zip(g2params_t, self.gparams)]
-
-    updates.extend([(param, T.switch(not_finite, .1*param, param - eta*deltaparam_t)) for param, deltaparam_t in zip(self.params, deltaparams_t)])
-    updates.extend([(g2param_tm1, T.switch(not_finite, .1*g2param_tm1, g2param_t)) for g2param_tm1, g2param_t in zip(g2params_tm1, g2params_t)])
-    updates.extend([(vparam, T.switch(not_finite, .1*vparam, mu*vparam - eta*deltaparam_t)) for vparam, deltaparam_t in zip(vparams, deltaparams_t)])
-    givens.extend([(param, param + mu*vparam) for param, vparam in zip(self.params, vparams)])
-
-    #-------------------------------------------------------------------
-    # Set up the dropout
-    srng = RandomStreams()
-    givens.extend([(hmask, srng.binomial(hmask.shape, 1, dropout, dtype=self.dtype)) for hmask in self.hmasks[:-1]] if dropout < 1 else [])
-
-    #-------------------------------------------------------------------
-    # Compile the sgd function
-    adanag = theano.function(
-        inputs=[],
-        outputs=[],
-        givens=givens,
-        updates=updates,
-        allow_input_downcast=True)
-
-    #-------------------------------------------------------------------
-    # Return the compiled function
-    print 'AdaNAG function compiled'
-    return adanag 
+    return grads, opt
 
   #=====================================================================
   # Run RMSProp (with NAG)
@@ -722,169 +425,202 @@ class Opt:
     """"""
 
     #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta_0   = np.float32(eta_0)
+    T_eta   = np.float32(T_eta)
+    rho_0   = np.float32(rho_0)
+    T_rho   = np.float32(T_rho)
+    mu_max  = np.float32(mu_max)
+    T_mu    = np.float32(T_mu)
+    epsilon = np.float32(epsilon)
+    anneal  = np.float32(anneal)
+    accel   = np.float32(accel)
+    
+    #-------------------------------------------------------------------
     # Set up the updates & givens
-    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams)))
+    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams + self.gsparams)))
     not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
     updates = []
     givens = []
 
     #-------------------------------------------------------------------
     # Set up a variable to keep track of the iteration
-    tau = theano.shared(np.cast[self.dtype](0.), name='tau')
-    updates.extend([(tau, tau+1)])
+    tau = theano.shared(np.cast[self.dtype](0), name='tau')
+    updates.extend([(tau, tau+np.float32(1))])
 
     #-------------------------------------------------------------------
     # Set the annealing/expansion schedule
     eta = eta_0*T.pow(T_eta/(tau+T_eta), anneal)
-    rho = rho_0*(1-T.pow(T_rho/(tau+T_rho), expand))
-    mu  = mu_max*(1-T.pow(T_mu/(tau+T_mu), accel))
+    rho = rho_0*(np.float32(1)-T.pow(T_rho/(tau+T_rho), expand))
+    mu  = mu_max*(np.float32(1)-T.pow(T_mu/(tau+T_mu), accel))
 
     #-------------------------------------------------------------------
-    # Initialize stored vectors
-    g2params_tm1      = [theano.shared(np.zeros_like(param.get_value()), name='g2%s' % param.name) for param in self.params]
-    vparams = [theano.shared(np.zeros_like(param.get_value()), name='v%s' % param.name) for param in self.params]
+    # Regular parameters
+    for x, gx in zip(self.params, self.gparams):
+      vx = theano.shared(np.zeros_like(x.get_value(), dtype='float32'), name='v%s' % x.name)
+      g2x = theano.shared(np.zeros_like(x.get_value(), dtype='float32'), name='g2%s' % x.name)
 
+      g2x_t = rho*g2x + (np.float32(1)-rho)*T.sqr(gx)
+      deltax_t = gx/T.sqrt(g2x_t+epsilon)
+      
+      updates.append((x, T.switch(not_finite, np.float32(.1)*x, x - eta*deltax_t)))
+      updates.append((g2x, T.switch(not_finite, np.float32(0), g2x_t)))
+      updates.append((vx, T.switch(not_finite, np.float32(0), mu*vx - eta*deltax_t)))
+      givens.append((x, x + mu*vx))
+    
     #-------------------------------------------------------------------
-    # Build up the updates
-    g2params_t     = [rho*g2param_tm1 + (1-rho)*(gparam_t**2) for g2param_tm1, gparam_t in zip(g2params_tm1, self.gparams)]
-    deltaparams_t  = [1/T.sqrt(g2param_t+epsilon)*gparam for g2param_t, gparam in zip(g2params_t, self.gparams)]
-
-    updates.extend([(param, T.switch(not_finite, .1*param, param - eta*deltaparam_t)) for param, deltaparam_t in zip(self.params, deltaparams_t)])
-    updates.extend([(g2param_tm1, T.switch(not_finite, .1*g2param_tm1, g2param_t)) for g2param_tm1, g2param_t in zip(g2params_tm1, g2params_t)])
-    updates.extend([(vparam, T.switch(not_finite, .1*vparam, mu*vparam - eta*deltaparam_t)) for vparam, deltaparam_t in zip(vparams, deltaparams_t)])
-    givens.extend([(param, param + mu*vparam) for param, vparam in zip(self.params, vparams)])
-
+    # Sparse parameters
+    gidxs = []
+    for L, gL in zip(self.sparams, self.gsparams):
+      g2L = theano.shared(np.zeros_like(L.get_value()), name='g2%s' % L.name)
+      vL = theano.shared(np.zeros_like(L.get_value()), name='v%s' % L.name)
+      
+      gidxs.append(T.ivector('gidxs'))
+      x = self.L[gidxs[-1]]
+      gx = self.gL[gidxs[-1]]
+      vx = vL[gidxs[-1]]
+      g2x = g2L[gidxs[-1]]
+      
+      updates.append(T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*gx, -eta*deltax_t)))
+      updates.append(T.set_subtensor(g2x, T.switch(not_finite, np.float32(0), g2x_t)))
+      updates.append(T.set_subtensor(vx, T.switch(not_finite, np.float32(0), mu*vx - eta*deltax_t)))
+      givens.append(T.inc_subtensor(x, mu*vx))
+      
     #-------------------------------------------------------------------
     # Set up the dropout
-    srng = RandomStreams()
-    givens.extend([(hmask, srng.binomial(hmask.shape, 1, dropout, dtype=self.dtype)) for hmask in self.hmasks[:-1]] if dropout < 1 else [])
+    if dropout < 1:
+      for hmask in hmasks:
+        givens.append((hmask, srng.binomial(hmask.shape, 1, dropout, dtype='float32')))
 
     #-------------------------------------------------------------------
-    # Compile the rmsprop function
-    rmsprop = theano.function(
-        inputs=[],
+    # Compile the gradient function
+    grads = theano.function(
+        inputs=[self.x, self.y],
+        outputs=[self.cost, self.x]+T.grad(self.cost, self.params+self.sparams),
+        givens=givens,
+        allow_input_downcast=True)
+        
+    #-------------------------------------------------------------------
+    # Compile the sgd function
+    opt = theano.function(
+        inputs=gidxs,
         outputs=[],
         givens=givens,
         updates=updates,
         allow_input_downcast=True)
 
+    #-------------------------------------------------------------------
+    # Return the compiled function
     print 'RMSProp function compiled'
-    return rmsprop 
-  
+    return grads, opt
+
   #=====================================================================
   # Run AdaDelta
   def AdaDelta(self, eta_0=1., T_eta=1, rho_0=.9, T_rho=1, epsilon=1e-6, dropout=1., anneal=0, expand=0):
     """"""
 
     #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta_0  = np.float32(eta_0)
+    T_eta  = np.float32(T_eta)
+    rho_0  = np.float32(rho_0)
+    T_rho  = np.float32(T_rho)
+    epsilon = np.float32(epsilon)
+    anneal = np.float32(anneal)
+    accel  = np.float32(accel)
+    
+    #-------------------------------------------------------------------
     # Set up the updates & givens
-    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams)))
+    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams+self.gsparams)))
     not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
     updates = []
     givens = []
 
     #-------------------------------------------------------------------
     # Set up a variable to keep track of the iteration
-    tau = theano.shared(np.cast[self.dtype](0.), name='tau')
-    updates.extend([(tau, tau+1)])
+    tau = theano.shared(np.float32(0.), name='tau')
+    updates.extend([(tau, tau+np.float32(1))])
 
     #-------------------------------------------------------------------
     # Set the annealing/expansion schedule
     eta = eta_0*T.pow(T_eta/(tau+T_eta), anneal)
-    rho = rho_0*(1-T.pow(T_rho/(tau+T_rho), expand))
+    rho = rho_0*(np.float32(1)-T.pow(T_rho/(tau+T_rho), expand))
 
     #-------------------------------------------------------------------
-    # Initialize stored vectors
-    g2params_tm1      = [theano.shared(np.zeros_like(param.get_value()), name='g2%s' % param.name) for param in self.params]
-    delta2params_tm1  = [theano.shared(np.zeros_like(param.get_value()), name='delta%s' % param.name) for param in self.params]
+    # Regular parameters
+    for x, gx in zip(self.params, self.gparams):
+      g2x = theano.shared(np.zeros_like(x.get_value(), dtype='float32'), name='g2%s' % x.name)
+      delta2x = theano.shared(np.zeros_like(x.get_value(), dtype='float32'), name='delta2%s' % x.name)
 
+      g2x_t = rho*g2x + (np.float32(1)-rho)*T.sqr(gx)
+      deltax_t = T.sqrt(delta2x + epsilon)/T.sqrt(g2x_t+epsilon)*gx
+      delta2x_t = rho*delta2x + (np.float32(1)-rho)*T.sqr(eta*deltax_t)
+      
+      updates.append((x, T.switch(not_finite, np.float32(.1)*x, x - eta*deltax_t)))
+      updates.append((delta2x, T.switch(not_finite, np.float32(0), delta2x_t)))
+      updates.append((g2x, T.switch(not_finite, np.float32(0), g2x_t)))
+    
     #-------------------------------------------------------------------
-    # Build up the updates
-    g2params_t     = [rho*g2param_tm1 + (1-rho)*(gparam_t**2) for g2param_tm1, gparam_t in zip(g2params_tm1, self.gparams)]
-    deltaparams_t  = [T.sqrt(delta2param_tm1+epsilon)/T.sqrt(g2param_t+epsilon)*gparam for delta2param_tm1, g2param_t, gparam in zip(delta2params_tm1, g2params_t, self.gparams)]
-    delta2params_t = [rho*delta2param_tm1 + (1-rho)*(deltaparam_t**2) for delta2param_tm1, deltaparam_t in zip(delta2params_tm1, deltaparams_t)]
-
-    updates.extend([(param, T.switch(not_finite, .1*param, param - eta*deltaparam_t)) for param, deltaparam_t in zip(self.params, deltaparams_t)])
-    updates.extend([(delta2param_tm1, T.switch(not_finite, .1*delta2param_tm1, delta2param_t)) for delta2param_tm1, delta2param_t in zip(delta2params_tm1, delta2params_t)])
-    updates.extend([(g2param_tm1, T.switch(not_finite, .1*g2param_tm1, g2param_t)) for g2param_tm1, g2param_t in zip(g2params_tm1, g2params_t)])
+    # Sparse parameters
+    gidxs = []
+    for L, gL in zip(self.sparams, self.gsparams):
+      gidxs.append(T.ivector('gidxs'))
+      x       = self.L[gidxs[-1]]
+      gx      = self.gL[gidxs[-1]]
+      g2x     = g2L[gidxs[-1]]
+      delta2x = delta2L[gidxs[-1]]
+      
+      g2x_t = rho*g2x + (np.float32(1)-rho)*T.sqr(gx)
+      deltax_t = gx*T.sqrt(delta2x+epsilon)/T.sqrt(g2x+epsilon)
+      delta2x_t = rho*delta2x + (np.float32(1)-rho)*T.sqr(deltax_t)
+      
+      updates.append(T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*x, -eta*deltax_t)))
+      updates.append(T.set_subtensor(delta2x, T.switch(not_finite, np.float32(0), delta2x_t)))
+      updates.append(T.set_subtensor(g2x, T.switch(not_finite, np.float32(0), g2x_t)))
 
     #-------------------------------------------------------------------
     # Set up the dropout
-    srng = RandomStreams()
-    givens.extend([(hmask, srng.binomial(hmask.shape, 1, dropout, dtype=self.dtype)) for hmask in self.hmasks[:-1]] if dropout < 1 else [])
+    if dropout < 1:
+      for hmask in hmasks:
+        givens.append((hmask, srng.binomial(hmask.shape, 1, dropout, dtype='float32')))
 
     #-------------------------------------------------------------------
-    # Compile the adadelta function
-    adadelta = theano.function(
-        inputs=[],
+    # Compile the gradient function
+    grads = theano.function(
+        inputs=[self.x, self.y],
+        outputs=[self.cost, self.x]+T.grad(self.cost, self.params+self.sparams),
+        givens=givens,
+        allow_input_downcast=True)
+        
+    #-------------------------------------------------------------------
+    # Compile the sgd function
+    opt = theano.function(
+        inputs=gidxs,
         outputs=[],
         givens=givens,
         updates=updates,
         allow_input_downcast=True)
 
+    #-------------------------------------------------------------------
+    # Return the compiled function
     print 'AdaDelta function compiled'
-    return adadelta
-
+    return grads, opt
+  
   #=====================================================================
   # Run Adam
   def Adam(self, eta_0=.05, T_eta=1, rho1_0=.9, rho2_0=.99, T_rho=1, epsilon=1e-6, dropout=1., anneal=0, expand=0):
     """"""
 
     #-------------------------------------------------------------------
-    # Set up the updates & givens
-    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams)))
-    not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
-    updates = []
-    givens = []
-
-    #-------------------------------------------------------------------
-    # Set up a variable to keep track of the iteration
-    tau = theano.shared(np.cast[self.dtype](0.), name='tau')
-    updates.extend([(tau, tau+1)])
-
-    #-------------------------------------------------------------------
-    # Set the annealing schedule
-    eta = eta_0*T.pow(T_eta/(tau+T_eta), anneal)
-    rho1 = rho1_0*(1-T.pow(T_rho/(tau+T_rho), expand))
-    rho2 = rho2_0*(1-T.pow(T_rho/(tau+T_rho), expand))
-
-    #-------------------------------------------------------------------
-    # Initialize stored vectors
-    mparams = [theano.shared(np.zeros_like(param.get_value()), name='m%s' % param.name) for param in self.params]
-    vparams = [theano.shared(np.zeros_like(param.get_value()), name='v%s' % param.name) for param in self.params]
-
-    #-------------------------------------------------------------------
-    # Set up the updates 
-    mparams_t = [(rho1*mparam + (1-rho1)*gparam) / (1-rho1) for mparam, gparam in zip(mparams, self.gparams)]
-    vparams_t = [(rho2*vparam + (1-rho2)*gparam**2) / (1-rho2) for vparam, gparam in zip(vparams, self.gparams)]
-    deltaparams_t = [mparam_t/(T.sqrt(vparam_t)+epsilon) for mparam_t, vparam_t in zip(mparams_t, vparams_t)]
-
-    updates.extend([(param, T.switch(not_finite, .1*param, param - eta * deltaparam_t)) for param, deltaparam_t in zip(self.params, deltaparams_t)])
-    updates.extend([(mparam, T.switch(not_finite, .1*mparam, mparam_t)) for mparam, mparam_t in zip(mparams, mparams_t)])
-    updates.extend([(vparam, T.switch(not_finite, .1*vparam, vparam_t)) for vparam, vparam_t in zip(vparams, vparams_t)])
-
-    #-------------------------------------------------------------------
-    # Set up the dropout
-    srng = RandomStreams()
-    givens.extend([(hmask, srng.binomial(hmask.shape, 1, dropout, dtype=self.dtype)) for hmask in self.hmasks[:-1]] if dropout < 1 else [])
-
-    #-------------------------------------------------------------------
-    # Compile the adam function
-    adam = theano.function(
-        inputs=[],
-        outputs=[],
-        givens=givens,
-        updates=updates,
-        allow_input_downcast=True)
+    # Cast everything as float32
+    eta_0  = np.float32(eta_0)
+    T_eta  = np.float32(T_eta)
+    rho1_max = np.float32(rho1_max)
+    rho2_max = np.float32(rho2_max)
+    T_rho   = np.float32(T_rho2)
+    anneal = np.float32(anneal)
+    accel  = np.float32(accel)
     
-    print 'Adam function compiled'
-    return adam
-
-  #=====================================================================
-  # Run SMORMS3 (Simon Funk)
-  def SMORMS3(self, eta_0=.05, T_eta=1, rho1_0=.9, rho2_0=.99, T_rho=1, epsilon=1e-6, dropout=1., anneal=0, expand=0):
-    """"""
-
     #-------------------------------------------------------------------
     # Set up the updates & givens
     grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams)))
@@ -895,48 +631,73 @@ class Opt:
     #-------------------------------------------------------------------
     # Set up a variable to keep track of the iteration
     tau = theano.shared(np.cast[self.dtype](0.), name='tau')
-    updates.extend([(tau, tau+1)])
+    updates.extend([(tau, tau+np.float32(1))])
 
     #-------------------------------------------------------------------
     # Set the annealing schedule
     eta = eta_0*T.pow(T_eta/(tau+T_eta), anneal)
-    rho1 = rho1_0*(1-T.pow(T_rho/(tau+T_rho), expand))
-    rho2 = rho2_0*(1-T.pow(T_rho/(tau+T_rho), expand))
+    rho1 = rho1_0*(np.float32(1)-T.pow(T_rho/(tau+T_rho), expand))
+    rho2 = rho2_0*(np.float32(1)-T.pow(T_rho/(tau+T_rho), expand))
 
     #-------------------------------------------------------------------
-    # Initialize stored vectors
-    mparams_tm1 = [theano.shared(np.ones_like(param.get_value()), name='m%s' % param.name) for param in self.params]
-    vparams_tm1 = [theano.shared(np.zeros_like(param.get_value()), name='v%s' % param.name) for param in self.params]
-    g2params_tm1 = [theano.shared(np.zeros_like(param.get_value()), name='g2%s' % param.name) for param in self.params]
-    
-    #-------------------------------------------------------------------
-    # Set up the updates 
-    rparams_t = [1/(mparam_tm1+1) for mparam_tm1 in mparams_tm1]
-    mparams_t = [(1-rparam_t)*mparam_tm1 + rparam_t*gparam for rparam_t, mparam_tm1, gparam in zip(rparams_t, mparams_tm1, self.gparams)]
-    vparams_t = [(1-rparam_t)*vparam_tm1 + rparam_t*gparam**2 for rparam_t, vparam_tm1, gparam in zip(rparams_t, vparams_tm1, self.gparams)]
-    deltaparams_t = [vparam_t**2/(g2param_t+epsilon) for vparam_t, g2param_t in zip(vparams_t, g2params_t)]
+    # Regular parameters
+    for x, gx in zip(self.params, self.gparams):
+      mx = theano.shared(np.zeros_like(x,get_value(), dtype='float32'), name='m%s' % param.name)
+      vx = theano.shared(np.zeros_like(x,get_value(), dtype='float32'), name='v%s' % param.name)
 
-    updates.extend([(param, T.switch(not_finite, .1*param, param - T.min(eta, deltaparam_t)/(T.sqrt(g2param_t)+epsilon))) for param, deltaparam_t, g2param_t in zip(self.params, deltaparams_t, g2params_t)])
-    updates.extend([(mparam_tm1, T.switch(not_finite, .1*mparam_tm1, 1+mparam_tm1*(1-deltaparam_t))) for mparam_tm1, deltaparam_t in zip(mparams_tm1, deltaparams_t)])
-    updates.extend([(g2param_tm1, T.switch(not_finite, .1*g2param_tm1, g2param_t)) for g2param_tm1, g2param_t in zip(g2params_tm1, g2params_t)])
-    updates.extend([(vparam_tm1, T.switch(not_finite, .1*vparam_tm1, vparam_t)) for vparam_tm1, vparam_t in zip(vparams_tm1, vparams_t)])
+      mx_t = (rho1*mx + (np.float32(1)-rho1)*gx) / (np.float32(1)-rho1)
+      vx_t = (rho2*vx + (np.float32(1)-rho2)*T.sqr(gx)) / (np.float32(1)-rho2)
+      deltax_t = mx_t / T.sqrt(vx_t) + epsilon
+      
+      updates.append((x, T.switch(not_finite, np.float32(.1)*x, x - eta*deltax_t)))
+      updates.append((mx, T.switch(not_finite, np.float32(0), mx_t)))
+      updates.append((vx, T.switch(not_finite, np.float32(0), vx_t)))
+      
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    gidxs = []
+    for L, gL in zip(self.sparams, self.gsparams):
+      gidxs.append(T.ivector('gidxs'))
+      x       = self.L[gidxs[-1]]
+      gx      = self.gL[gidxs[-1]]
+      g2x     = g2L[gidxs[-1]]
+      delta2x = delta2L[gidxs[-1]]
+      
+      g2x_t = rho*g2x + (np.float32(1)-rho)*T.sqr(gx)
+      deltax_t = gx*T.sqrt(delta2x+epsilon)/T.sqrt(g2x+epsilon)
+      delta2x_t = rho*delta2x + (np.float32(1)-rho)*T.sqr(deltax_t)
+      
+      updates.append(T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*x, -eta*deltax_t)))
+      updates.append(T.set_subtensor(delta2x, T.switch(not_finite, np.float32(0), delta2x_t)))
+      updates.append(T.set_subtensor(g2x, T.switch(not_finite, np.float32(0), g2x_t)))
 
     #-------------------------------------------------------------------
     # Set up the dropout
-    srng = RandomStreams()
-    givens.extend([(hmask, srng.binomial(hmask.shape, 1, dropout, dtype=self.dtype)) for hmask in self.hmasks[:-1]] if dropout < 1 else [])
+    if dropout < 1:
+      for hmask in hmasks:
+        givens.append((hmask, srng.binomial(hmask.shape, 1, dropout, dtype='float32')))
 
     #-------------------------------------------------------------------
-    # Compile the adam function
-    adam = theano.function(
-        inputs=[],
+    # Compile the gradient function
+    grads = theano.function(
+        inputs=[self.x, self.y],
+        outputs=[self.cost, self.x]+T.grad(self.cost, self.params+self.sparams),
+        givens=givens,
+        allow_input_downcast=True)
+        
+    #-------------------------------------------------------------------
+    # Compile the sgd function
+    opt = theano.function(
+        inputs=gidxs,
         outputs=[],
         givens=givens,
         updates=updates,
         allow_input_downcast=True)
-    
-    print 'Adam function compiled'
-    return adam
+
+    #-------------------------------------------------------------------
+    # Return the compiled function
+    print 'AdaDelta function compiled'
+    return grads, opt
 
 #***********************************************************************
 # A multilayer basic recurrent neural encoder
@@ -956,43 +717,42 @@ class Encoder(Opt):
       self.model = 'RNN'
     
     if 'window' in kwargs:
-      self.window = kwargs['window']
+      self.window = np.float32(kwargs['window'])
     else:
-      self.window = 1
+      self.window = np.float32(1)
 
     if 'reverse' in kwargs:
       self.reverse = kwargs['reverse']
     else:
-      self.reverse = 'RNN'
+      self.reverse = False
 
     if 'L1reg' in kwargs:
-      self.L1reg = kwargs['L1reg']
+      self.L1reg = np.float32(kwargs['L1reg'])
     else:
-      self.L1reg = 0.
+      self.L1reg = np.float32(0)
 
     if 'L2reg' in kwargs:
-      self.L2reg = kwargs['L1reg']
+      self.L2reg = np.float32(kwargs['L1reg'])
     else:
-      self.L2reg = 0.
-
+      self.L2reg = np.float32(0)
 
     #-------------------------------------------------------------------
     # Process the libraries
-    # TODO still need Lparams?
     self.libs = []
+    self.sparams = []
+    self.gsparams = []
     ldims = []
-    l_0 = []
-    l_max = []
-    for lib in libs:
+    for i, lib in enumerate(libs):
       if not isinstance(lib, Library):
         lib = Library(*lib)
       self.libs.append(lib)
+      if lib.mutable():
+        self.sparams.extend(lib.L)
+        self.gsparams.append(lib.gL)
+        lib.L.name = 'L-%d' % (i+1)
+        lib.gL.name = 'gL-%d' % (i+1)
       ldims.append(lib.wsize())
-      l_0.append(lib.start_idx())
-      l_max.append(lib.stop_idx())
     ldims = np.sum(ldims)*self.window
-    l_0 = T.concatenate(l_0, axis=1)
-    l_max = T.concatenate(l_max, axis=1)
     dims.insert(0, ldims)
 
     #-------------------------------------------------------------------
@@ -1022,14 +782,15 @@ class Encoder(Opt):
       self.hmasks.append(theano.shared(np.ones(dims[i]*gates, dtype='float32'), name='hmask-%d' % (i+1)))
       self.h_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='h_0-%d' % (i+1)))
       self.c_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='c_0-%d' % (i+1)))
-
+    hmasks.extend([lib.hmask for lib in self.libs])
+    
     #-----------------------------------------------------------------
     # Build the input/output variables
-    self.idxs = T.imatrix('idxs')
-    self.xparams = []
+    self.x = T.imatrix('x')
+    xparams = []
     for i, lib in enumerate(self.libs):
-      self.xparams.append(lib.get_subtensor(self.idxs[:,i]))
-    x = T.concatenate(self.xparams, axis=1)
+      xparams.append(lib.get_subtensor(self.x[:,i])*lib.hmask)
+    x = T.concatenate(xparams, axis=1)
     self.y = T.fvector('y')
 
     #-------------------------------------------------------------------
@@ -1110,7 +871,7 @@ class Encoder(Opt):
 
           azr = T.dot(Wparam, xparam) + bparam
           a   = func(azr[:sliceLen], s)
-          z   = sig(zr[sliceLen:2*sliceLen])/4
+          z   = sig(zr[sliceLen:2*sliceLen])/np.float32(4)
           r   = sig(zr[2*sliceLen:])
 
           c = z*a + (np.float32(1)-z)*r*h_tm1_l
@@ -1185,48 +946,45 @@ class Encoder(Opt):
 
     #-------------------------------------------------------------------
     # Build the cost variable
-    # TODO integrate this with the library class
     self.error = T.mean(squared_difference(yhat, self.y))
 
-    self.complexity = theano.shared(np.float32(0)) +\
-        (np.float32(self.L1reg)*T.sum([T.sum(T.abs_(Wparam)) for Wparam in self.Wparams]) if self.L1reg > 0 else np.float32(0)) +\
-        (np.float32(self.L2reg)*T.sum([T.sum(T.sqr(Wparam)) for Wparam in self.Wparams]) if self.L2reg > 0 else np.float32(0))
+    self.complexity = theano.shared(np.float32(0))
+    if self.L1reg > 0:
+      self.complexity += self.L1reg*T.sum([T.sum(T.abs_(Wparam)) for Wparam in self.Wparams])
+      self.complexity += self.L1reg*T.sum([T.sum(T.abs_(xparam)) for lib, xparam in zip(self.libs, xparams) if lib.mutable()])
+                          
+    if self.L2reg > 0:
+      self.complexity += self.L2reg*T.sum([T.sum(T.sqr(Wparam)) for Wparam in self.Wparams])
+      self.complexity += self.L2reg*T.sum([T.sum(T.sqr(xparam)) for lib, xparam in zip(self.libs, xparams) if lib.mutable()])
 
     self.cost = self.error + self.complexity 
 
     #===================================================================
     # Activate
     self.idxs_to_vec = theano.function(
-        inputs=[self.idxs],
+        inputs=[self.x],
         outputs=yhat,
         allow_input_downcast=True)
 
     #===================================================================
     # Error
     self.idxs_to_err = theano.function(
-        inputs=[self.idxs, self.y],
+        inputs=[self.x, self.y],
         outputs=self.error,
         allow_input_downcast=True)
 
     #===================================================================
     # Complexity
-    self.comp = theano.function(
-        inputs=[],
+    self.idxs_to_comp = theano.function(
+        inputs=[self.x],
         outputs=self.complexity,
         allow_input_downcast=True)
 
     #===================================================================
     # Cost
     self.idxs_to_cost = theano.function(
-        inputs=[self.idxs, self.y],
+        inputs=[self.x, self.y],
         outputs=self.cost,
-        allow_input_downcast=True)
-
-    #===================================================================
-    # Gradients
-    self.idxs_to_grads = theano.function(
-        inputs=[self.idxs, self.y],
-        outputs=[self.cost] + T.grad(self.cost, self.params),
         allow_input_downcast=True)
 
     #===================================================================
@@ -1249,7 +1007,7 @@ class Encoder(Opt):
     self.reset_grad = theano.function(
         inputs=[],
         outputs=[],
-        updates=[(gparam, 0*gparam) for gparam in self.gparams],
+        updates=[(gparam, np.float32(0)*gparam) for gparam in self.gparams],
         allow_input_downcast=True)
 
   #=====================================================================
@@ -1486,9 +1244,13 @@ class Encoder(Opt):
 
   #=====================================================================
   # Calculate the gradients of a minibatch using multiple cores
-  def train(self, dataset, optimizer, batchSize=64, epochs=1, costEvery=None, testset=None, saveEvery=None, savePipe=None, workers=2):
+  def train(self, dataset, optimizer, grader, batchSize=64, epochs=1, costEvery=None, testset=None, saveEvery=None, savePipe=None, workers=2):
     """"""
 
+    #-------------------------------------------------------------------
+    #
+    nmutables = sum([lib.mutable() for lib in self.libs])
+    
     #-------------------------------------------------------------------
     # Saving and printing
     s = ''
@@ -1524,20 +1286,39 @@ class Encoder(Opt):
         processes = []
         for datum in dataset[mb*batchSize:(mb+1)*batchSize]:
           dataQueue.put(datum)
+          for i, lib in enumerate(self.libs):
+            if lib.mutable():
+              lib.update_gidxs(self.x[:,i])
         for worker in xrange(workers):
           dataQueue.put('STOP')
         for worker in xrange(workers):
-          process = mp.Process(target=func_worker, args=(dataQueue, gradQueue, self.idxs_to_grads))
+          process = mp.Process(target=func_worker, args=(dataQueue, gradQueue, grader))
           process.start()
           processes.append(process)
         for worker in xrange(workers):
           for grads in iter(gradQueue.get, 'STOP'):
             recentCost.append(grads[0])
-            self.update_grads(batchSize, *grads[1:])
+            if nmutables > 0:
+              idxs = grads[1]
+              gidxs = []
+              owngrads = grads[2:-nmutables]
+              libgrads = grads[-nmutables:]
+              self.update_grads(batchSize, *owngrads)
+              j = 0
+              for i, lib in enumerate(self.libs):
+                if lib.mutable():
+                  lib.update_lib_grads(batchSize, libgrads[j], idxs[:,i])
+                  gidxs.append(lib.gidxs())
+                  j += 1
+            else:
+              self.update_grads(batchSize, *grads[2:])
+              gidxs = []
         for process in processes:
           process.join()
-        optimizer()
+        optimizer(gidxs)
         self.reset_grad()
+        for lib in self.libs:
+          lib.reset_lib_grads()
 
         #---------------------------------------------------------------
         # More printing and saving
