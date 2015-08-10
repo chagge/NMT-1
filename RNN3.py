@@ -21,7 +21,7 @@ srng = RandomStreams()
 def squared_difference(output, target):
   """"""
 
-  return T.pow(output-target, 2)/2
+  return T.pow(output-target, np.float32(2))/np.float32(2)
 
 #=======================================================================
 # Absolute difference
@@ -148,7 +148,7 @@ class Library():
     # Set up the Theano variables
     self.hmask = theano.shared(np.ones(self._wsize, dtype='float32'))
     self.L = theano.shared(mat)
-    self.gL = theano.shared(zeros_like(mat, dtype='float32'))
+    self.gL = theano.shared(np.zeros_like(mat, dtype='float32'))
     self._gidxs = set()
 
     #=====================================================================
@@ -169,13 +169,13 @@ class Library():
 
     #=====================================================================
     # Update gradients
-    batchSize = T.scalar('batchSize')
-    gxparams = T.matrix('gxparams')
-    gidxs = T.vector('gidxs')
+    batchSize = T.iscalar('batchSize')
+    gx = T.fmatrix('gxparams')
+    gidxs = T.ivector('gidxs')
     update_grads = theano.function(
-        inputs=[batchsize, grad, gidxs],
+        inputs=[batchSize, gx, gidxs],
         outputs=[],
-        updates=T.inc_subtensor(self.gL[gidxs], grad/batchSize),
+        updates=[(self.gL, T.inc_subtensor(self.gL[gidxs], gx/batchSize))],
         allow_input_downcast=True)
 
     #===================================================================
@@ -183,7 +183,7 @@ class Library():
     self.reset_grads = theano.function(
         inputs=[gidxs],
         outputs=[],
-        updates=set_subtensor(self.gL[gidxs], np.float32(0)*self.gL[gidxs]),
+        updates=[(self.gL, T.set_subtensor(self.gL[gidxs], np.float32(0)*self.gL[gidxs]))],
         allow_input_downcast=True)
 
   #=====================================================================
@@ -387,9 +387,9 @@ class Opt:
       gx = self.gL[gidxs[-1]]
       vx = vL[gidxs[-1]]
       
-      updates.append(T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*x, -eta*gx)))
-      updates.append(T.set_subtensor(vx, T.switch(not_finite, np.float32(0), mu*vx - eta*gx)))
-      givens.append(T.inc_subtensor(x, mu*vx))
+      updates.append((L, T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*x, -eta*gx))))
+      updates.append((vL, T.set_subtensor(vx, T.switch(not_finite, np.float32(0), mu*vx - eta*gx))))
+      givens.append((L, T.inc_subtensor(x, mu*vx)))
 
     #-------------------------------------------------------------------
     # Set up the dropout
@@ -481,10 +481,10 @@ class Opt:
       vx = vL[gidxs[-1]]
       g2x = g2L[gidxs[-1]]
       
-      updates.append(T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*gx, -eta*deltax_t)))
-      updates.append(T.set_subtensor(g2x, T.switch(not_finite, np.float32(0), g2x_t)))
-      updates.append(T.set_subtensor(vx, T.switch(not_finite, np.float32(0), mu*vx - eta*deltax_t)))
-      givens.append(T.inc_subtensor(x, mu*vx))
+      updates.append((L, T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*gx, -eta*deltax_t))))
+      updates.append((g2L, T.set_subtensor(g2x, T.switch(not_finite, np.float32(0), g2x_t))))
+      updates.append((vL, T.set_subtensor(vx, T.switch(not_finite, np.float32(0), mu*vx - eta*deltax_t))))
+      givens.append((L, T.inc_subtensor(x, mu*vx)))
       
     #-------------------------------------------------------------------
     # Set up the dropout
@@ -564,6 +564,9 @@ class Opt:
     # Sparse parameters
     gidxs = []
     for L, gL in zip(self.sparams, self.gsparams):
+      g2L = theano.shared(np.zeros_like(L.get_value()), name='g2%s' % L.name)
+      delta2L = theano.shared(np.zeros_like(L.get_value()), name='delta2%s' % L.name)
+      
       gidxs.append(T.ivector('gidxs'))
       x       = self.L[gidxs[-1]]
       gx      = self.gL[gidxs[-1]]
@@ -574,9 +577,9 @@ class Opt:
       deltax_t = gx*T.sqrt(delta2x+epsilon)/T.sqrt(g2x+epsilon)
       delta2x_t = rho*delta2x + (np.float32(1)-rho)*T.sqr(deltax_t)
       
-      updates.append(T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*x, -eta*deltax_t)))
-      updates.append(T.set_subtensor(delta2x, T.switch(not_finite, np.float32(0), delta2x_t)))
-      updates.append(T.set_subtensor(g2x, T.switch(not_finite, np.float32(0), g2x_t)))
+      updates.append((L, T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*x, -eta*deltax_t))))
+      updates.append((delta2L, T.set_subtensor(delta2x, T.switch(not_finite, np.float32(0), delta2x_t))))
+      updates.append((g2L, T.set_subtensor(g2x, T.switch(not_finite, np.float32(0), g2x_t))))
 
     #-------------------------------------------------------------------
     # Set up the dropout
@@ -657,19 +660,22 @@ class Opt:
     # Sparse parameters
     gidxs = []
     for L, gL in zip(self.sparams, self.gsparams):
+      mL = theano.shared(np.zeros_like(L.get_value()), name='m%s' % L.name)
+      vL = theano.shared(np.zeros_like(L.get_value()), name='v%s' % L.name)
+      
       gidxs.append(T.ivector('gidxs'))
-      x       = self.L[gidxs[-1]]
-      gx      = self.gL[gidxs[-1]]
-      g2x     = g2L[gidxs[-1]]
-      delta2x = delta2L[gidxs[-1]]
+      x  = self.L[gidxs[-1]]
+      gx = self.gL[gidxs[-1]]
+      mx = mL[gidxs[-1]]
+      vx = vL[gidxs[-1]]
       
-      g2x_t = rho*g2x + (np.float32(1)-rho)*T.sqr(gx)
-      deltax_t = gx*T.sqrt(delta2x+epsilon)/T.sqrt(g2x+epsilon)
-      delta2x_t = rho*delta2x + (np.float32(1)-rho)*T.sqr(deltax_t)
+      mx_t = (rho1*mx + (np.float32(1)-rho1)*gx) / (np.float32(1)-rho1)
+      vx_t = (rho2*vx + (np.float32(1)-rho2)*T.sqr(gx)) / (np.float32(1)-rho2)
+      deltax_t = mx_t / T.sqrt(vx_t) + epsilon
       
-      updates.append(T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*x, -eta*deltax_t)))
-      updates.append(T.set_subtensor(delta2x, T.switch(not_finite, np.float32(0), delta2x_t)))
-      updates.append(T.set_subtensor(g2x, T.switch(not_finite, np.float32(0), g2x_t)))
+      updates.append((L, T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*x, -eta*deltax_t))))
+      updates.append((mL, T.set_subtensor(mx, T.switch(not_finite, np.float32(0), mx_t))))
+      updates.append((vL, T.set_subtensor(vx, T.switch(not_finite, np.float32(0), vx_t))))
 
     #-------------------------------------------------------------------
     # Set up the dropout
@@ -719,7 +725,7 @@ class Encoder(Opt):
     if 'window' in kwargs:
       self.window = np.float32(kwargs['window'])
     else:
-      self.window = np.float32(1)
+      self.window = np.int32(1)
 
     if 'reverse' in kwargs:
       self.reverse = kwargs['reverse']
@@ -747,7 +753,7 @@ class Encoder(Opt):
         lib = Library(*lib)
       self.libs.append(lib)
       if lib.mutable():
-        self.sparams.extend(lib.L)
+        self.sparams.append(lib.L)
         self.gsparams.append(lib.gL)
         lib.L.name = 'L-%d' % (i+1)
         lib.gL.name = 'gL-%d' % (i+1)
@@ -782,7 +788,7 @@ class Encoder(Opt):
       self.hmasks.append(theano.shared(np.ones(dims[i]*gates, dtype='float32'), name='hmask-%d' % (i+1)))
       self.h_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='h_0-%d' % (i+1)))
       self.c_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='c_0-%d' % (i+1)))
-    hmasks.extend([lib.hmask for lib in self.libs])
+    self.hmasks.extend([lib.hmask for lib in self.libs])
     
     #-----------------------------------------------------------------
     # Build the input/output variables
@@ -1389,7 +1395,7 @@ class Encoder(Opt):
 if __name__ == '__main__':
   """"""
 
-  glove = pkl.load(open('glove.6B.10k.50d.pkl'))
+  glove = pkl.load(open('glove.6B.10k.50d-real.pkl'))
   dataset = zip([list(x) for x in sorted(glove[1], key=glove[1].get)], glove[0])
   vocab = set()
   for datum in dataset:
