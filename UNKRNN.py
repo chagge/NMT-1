@@ -1177,7 +1177,7 @@ if __name__ == '__main__':
   import os.path
   np.random.seed(248832)
 
-  glove = pkl.load(open('glove.6B.50k.50d.pkl'))
+  glove = pkl.load(open('glove.6B.10k.50d-real.pkl'))
   vocab = set()
   [vocab.update(list(key)) for key in glove[1].keys()]
   vocab.update(['<UNK>', '<S>', '</S>'])

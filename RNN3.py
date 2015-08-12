@@ -7,6 +7,7 @@ import theano.tensor as T
 import cPickle as pkl
 import multiprocessing as mp
 import sys
+import time
 sys.setrecursionlimit(50000)
 from theano.tensor.shared_randomstreams import RandomStreams
 srng = RandomStreams()
@@ -59,23 +60,56 @@ def func(x, s):
   return s*tanh(x) + (np.float32(1)-s)*relu(x)
 
 #=======================================================================
-# Worker function
-def func_worker(dataQueue, outQueue, func=None):
+# Cost worker function
+def cost_worker(cost_func, dataQueue, outQueue):
+  """"""
+
+  store = 0
+  for datum in iter(dataQueue.get, 'STOP'):
+    store += cost_func(*datum)
+  if store != 0:
+    outQueue.put(store)
+  outQueue.put('STOP')
+  #print 'Worker is done with %s; size: %d' % (str(func), dataQueue.qsize())
+  return True
+
+#=======================================================================
+# Gradient worker function
+def grad_worker(grad_func, dataQueue, outQueue, nmutables=0):
   """"""
 
   store = None
   for datum in iter(dataQueue.get, 'STOP'):
+    grad_info = grad_func(*datum)
+    sidxs = grad_info[:nmutables]
+    cost = grad_info[nmutables]
+    grads = grad_info[nmutables+1:len(grad_info)-nmutables]
+    sgrads = grad_info[len(grad_info)-nmutables:]
     if store is None:
-      store = func(*datum) if func is not None else datum
-    elif isinstance(store, (tuple, list)):
-      for s, d in zip(store, func(*datum) if func is not None else datum):
-        s += d
+      store = {}
+      store['cost'] = cost
+      store['grads'] = grads
+      store['sgrads'] = []
+      for i, sidx, sgrad in zip(range(nmutables), sidxs, sgrads):
+        store['sgrads'].append({})
+        for idx, grad in zip(sidx, sgrad):
+          if idx not in store['sgrads'][i]:
+            store['sgrads'][i][idx] = grad
+          else:
+            store['sgrads'][i][idx] += grad
     else:
-      store += func(*datum) if func is not None else datum
+      store['cost'] += cost
+      for i, grad in enumerate(grads):
+        store['grads'][i] += grad
+      for i, sidx, sgrad in zip(range(nmutables), sidxs, sgrads):
+        for idx, grad in zip(sidx, sgrad):
+          if idx not in store['sgrads'][i]:
+            store['sgrads'][i][idx] = grad
+          else:
+            store['sgrads'][i][idx] += grad
   if store is not None:
     outQueue.put(store)
   outQueue.put('STOP')
-  #print 'Worker is done with %s; size: %d' % (str(func), dataQueue.qsize())
   return True
 
 #***********************************************************************
@@ -112,18 +146,6 @@ class Library():
       self._mutable = True
 
     #-------------------------------------------------------------------
-    # Set up the matrix
-    if isinstance(mat, int):
-      mat = np.random.randn(len(keys), mat).astype('float32')
-      self._mutable = True
-    else:
-      assert self.start in keys
-      assert self.stop in keys
-      assert self.unk in keys
-      mat = mat.astype('float32')
-    self._wsize = mat.shape[1]
-
-    #-------------------------------------------------------------------
     # Set up the access keys
     if isinstance(keys, (tuple, list, set)):
       keys = set(keys)
@@ -135,7 +157,7 @@ class Library():
       self.strs = {}
       for i, key in enumerate(keys):
         self.idxs[key] = np.int32(i)
-        self.strs[i] = key
+        self.strs[np.int32(i)] = key
     elif isinstance(keys, dict):
       if 0 in keys:
         self.strs = keys
@@ -143,11 +165,21 @@ class Library():
       else:
         self.idxs = keys
         self.strs = {v:k for k, v in keys.iteritems()}
+        
+    #-------------------------------------------------------------------
+    # Set up the matrix
+    if isinstance(mat, int):
+      mat = np.random.randn(len(keys), mat)
+      self._mutable = True
+    else:
+      assert len(mat) == len(keys)
+    self._wsize = mat.shape[1]
+    
 
     #-------------------------------------------------------------------
     # Set up the Theano variables
     self.hmask = theano.shared(np.ones(self._wsize, dtype='float32'))
-    self.L = theano.shared(mat)
+    self.L = theano.shared(mat.astype('float32'))
     self.gL = theano.shared(np.zeros_like(mat, dtype='float32'))
     self._gidxs = set()
 
@@ -157,7 +189,7 @@ class Library():
     self.idxs_to_vecs = theano.function(
         inputs=[x],
         outputs=self.L[x],
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
     #=====================================================================
     # Convert vectors to idxs 
@@ -165,18 +197,18 @@ class Library():
     self.vecs_to_idxs = theano.function(
         inputs=[v],
         outputs=T.argmin(T.sum(squared_difference(self.L[None,:,:], v[:,None,:]), axis=2), axis=1),
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
     #=====================================================================
     # Update gradients
-    batchSize = T.iscalar('batchSize')
+    batchSize = T.fscalar('batchSize')
     gx = T.fmatrix('gxparams')
     gidxs = T.ivector('gidxs')
-    update_grads = theano.function(
+    self.update_grads = theano.function(
         inputs=[batchSize, gx, gidxs],
         outputs=[],
         updates=[(self.gL, T.inc_subtensor(self.gL[gidxs], gx/batchSize))],
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
     #===================================================================
     # Reset gradients
@@ -184,21 +216,27 @@ class Library():
         inputs=[gidxs],
         outputs=[],
         updates=[(self.gL, T.set_subtensor(self.gL[gidxs], np.float32(0)*self.gL[gidxs]))],
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
   #=====================================================================
   # Update gradients
-  def update_gidxss(self, batchSize, grad, gidxs):
+  def update_gidxs(self, gidxs):
     """"""
 
-    self.update_grads(batchSize, grad, gidxs)
+    self._gidxs.update(gidxs)
 
   #=====================================================================
   # Update gradients
-  def update_lib_grads(self, batchSize, grad, gidxs):
+  def update_lib_grads(self, batchSize, sgrads):
     """"""
 
-    self.update_grads(batchSize, grad, gidxs)
+    gidxs = np.empty(len(sgrads), dtype='int32')
+    grads = np.empty((len(sgrads), self.wsize()), dtype='float32')
+    for i, pair in enumerate(sgrads.iteritems()):
+      gidxs[i] = pair[0]
+      grads[i] = pair[1]
+    self.update_grads(batchSize, grads, gidxs)
+    self.update_gidxs(gidxs)
 
   #=====================================================================
   # Reset gradients
@@ -213,7 +251,7 @@ class Library():
   def gidxs(self):
     """"""
 
-    return np.array(self._gidxs, dtype='int32')
+    return np.array(list(self._gidxs), dtype='int32')
 
   #=====================================================================
   # Get mutability 
@@ -352,7 +390,7 @@ class Opt:
     
     #-------------------------------------------------------------------
     # Set up the updates & givens
-    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams + self.sgparams)))
+    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams + self.gsparams)))
     not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
     updates = []
     givens = []
@@ -380,11 +418,11 @@ class Opt:
     # Sparse parameters
     gidxs = []
     for L, gL in zip(self.sparams, self.gsparams):
-      vL = theano.shared(np.zeros_like(L.get_value()), name='v%s' % L.name)
+      vL = theano.shared(np.zeros_like(L.get_value(), dtype='float32'), name='v%s' % L.name)
       
       gidxs.append(T.ivector('gidxs'))
-      x = self.L[gidxs[-1]]
-      gx = self.gL[gidxs[-1]]
+      x = L[gidxs[-1]]
+      gx = gL[gidxs[-1]]
       vx = vL[gidxs[-1]]
       
       updates.append((L, T.inc_subtensor(x, T.switch(not_finite, np.float32(-.9)*x, -eta*gx))))
@@ -400,10 +438,10 @@ class Opt:
     #-------------------------------------------------------------------
     # Compile the gradient function
     grads = theano.function(
-        inputs=[self.x, self.y],
-        outputs=[self.cost, self.x]+T.grad(self.cost, self.params+self.sparams),
+        inputs=[self.x, self.y]+gidxs,
+        outputs=gidxs+[self.cost]+T.grad(self.cost, self.params+self.sparams),
         givens=givens,
-        allow_input_downcast=True)
+        allow_input_downcast=False)
         
     #-------------------------------------------------------------------
     # Compile the sgd function
@@ -412,7 +450,7 @@ class Opt:
         outputs=[],
         givens=givens,
         updates=updates,
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
     #-------------------------------------------------------------------
     # Return the compiled function
@@ -472,12 +510,12 @@ class Opt:
     # Sparse parameters
     gidxs = []
     for L, gL in zip(self.sparams, self.gsparams):
-      g2L = theano.shared(np.zeros_like(L.get_value()), name='g2%s' % L.name)
-      vL = theano.shared(np.zeros_like(L.get_value()), name='v%s' % L.name)
+      g2L = theano.shared(np.zeros_like(L.get_value(), dtype='float32'), name='g2%s' % L.name)
+      vL = theano.shared(np.zeros_like(L.get_value(), dtype='float32'), name='v%s' % L.name)
       
       gidxs.append(T.ivector('gidxs'))
-      x = self.L[gidxs[-1]]
-      gx = self.gL[gidxs[-1]]
+      x = L[gidxs[-1]]
+      gx = gL[gidxs[-1]]
       vx = vL[gidxs[-1]]
       g2x = g2L[gidxs[-1]]
       
@@ -495,10 +533,10 @@ class Opt:
     #-------------------------------------------------------------------
     # Compile the gradient function
     grads = theano.function(
-        inputs=[self.x, self.y],
+        inputs=[self.x, self.y]+gidxs,
         outputs=[self.cost, self.x]+T.grad(self.cost, self.params+self.sparams),
         givens=givens,
-        allow_input_downcast=True)
+        allow_input_downcast=False)
         
     #-------------------------------------------------------------------
     # Compile the sgd function
@@ -507,7 +545,7 @@ class Opt:
         outputs=[],
         givens=givens,
         updates=updates,
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
     #-------------------------------------------------------------------
     # Return the compiled function
@@ -564,12 +602,12 @@ class Opt:
     # Sparse parameters
     gidxs = []
     for L, gL in zip(self.sparams, self.gsparams):
-      g2L = theano.shared(np.zeros_like(L.get_value()), name='g2%s' % L.name)
-      delta2L = theano.shared(np.zeros_like(L.get_value()), name='delta2%s' % L.name)
+      g2L = theano.shared(np.zeros_like(L.get_value(), dtype='float32'), name='g2%s' % L.name)
+      delta2L = theano.shared(np.zeros_like(L.get_value(), dtype='float32'), name='delta2%s' % L.name)
       
       gidxs.append(T.ivector('gidxs'))
-      x       = self.L[gidxs[-1]]
-      gx      = self.gL[gidxs[-1]]
+      x       = L[gidxs[-1]]
+      gx      = gL[gidxs[-1]]
       g2x     = g2L[gidxs[-1]]
       delta2x = delta2L[gidxs[-1]]
       
@@ -590,10 +628,10 @@ class Opt:
     #-------------------------------------------------------------------
     # Compile the gradient function
     grads = theano.function(
-        inputs=[self.x, self.y],
+        inputs=[self.x, self.y]+gidxs,
         outputs=[self.cost, self.x]+T.grad(self.cost, self.params+self.sparams),
         givens=givens,
-        allow_input_downcast=True)
+        allow_input_downcast=False)
         
     #-------------------------------------------------------------------
     # Compile the sgd function
@@ -602,7 +640,7 @@ class Opt:
         outputs=[],
         givens=givens,
         updates=updates,
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
     #-------------------------------------------------------------------
     # Return the compiled function
@@ -626,7 +664,7 @@ class Opt:
     
     #-------------------------------------------------------------------
     # Set up the updates & givens
-    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams)))
+    grad_norm  = T.sqrt(sum(map(lambda x: T.sqr(x).sum(), self.gparams + self.gsparams)))
     not_finite = T.or_(T.isnan(grad_norm), T.isinf(grad_norm))
     updates = []
     givens = []
@@ -660,12 +698,12 @@ class Opt:
     # Sparse parameters
     gidxs = []
     for L, gL in zip(self.sparams, self.gsparams):
-      mL = theano.shared(np.zeros_like(L.get_value()), name='m%s' % L.name)
-      vL = theano.shared(np.zeros_like(L.get_value()), name='v%s' % L.name)
+      mL = theano.shared(np.zeros_like(L.get_value(), dtype='float32'), name='m%s' % L.name)
+      vL = theano.shared(np.zeros_like(L.get_value(), dtype='float32'), name='v%s' % L.name)
       
       gidxs.append(T.ivector('gidxs'))
-      x  = self.L[gidxs[-1]]
-      gx = self.gL[gidxs[-1]]
+      x  = L[gidxs[-1]]
+      gx = gL[gidxs[-1]]
       mx = mL[gidxs[-1]]
       vx = vL[gidxs[-1]]
       
@@ -686,10 +724,10 @@ class Opt:
     #-------------------------------------------------------------------
     # Compile the gradient function
     grads = theano.function(
-        inputs=[self.x, self.y],
+        inputs=[self.x, self.y]+gidxs,
         outputs=[self.cost, self.x]+T.grad(self.cost, self.params+self.sparams),
         givens=givens,
-        allow_input_downcast=True)
+        allow_input_downcast=False)
         
     #-------------------------------------------------------------------
     # Compile the sgd function
@@ -698,7 +736,7 @@ class Opt:
         outputs=[],
         givens=givens,
         updates=updates,
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
     #-------------------------------------------------------------------
     # Return the compiled function
@@ -778,16 +816,16 @@ class Encoder(Opt):
     self.c_0   = []
 
     for i in xrange(1, len(dims)):
-      W = matwizard(dims[i-1], dims[i]*gates)
-      U = matwizard(dims[i-1], dims[i], shape='diag')
+      W = matwizard(dims[i]*gates, dims[i-1])
+      U = matwizard(dims[i], dims[i], shape='diag')
       if gates > 1:
-        U = np.concatenate([U, matwizard(dims[i-1], dims[i]*(gates-1))], axis=1)
-      self.Wparams.append(theano.shared(np.concatenate([W, U]), name='W-%d' % (i+1)))
-      self.bparams.append(theano.shared(np.zeros(dims[i]*gates, dtype='float32'), name='b-%d' % (i+1)))
-      self.hparams.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='h-%d' % (i+1)))
-      self.hmasks.append(theano.shared(np.ones(dims[i]*gates, dtype='float32'), name='hmask-%d' % (i+1)))
-      self.h_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='h_0-%d' % (i+1)))
-      self.c_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='c_0-%d' % (i+1)))
+        U = np.concatenate([U, matwizard(dims[i]*(gates-1), dims[i])], axis=0)
+      self.Wparams.append(theano.shared(np.concatenate([W, U], axis=1), name='W-%d' % i))
+      self.bparams.append(theano.shared(np.zeros(dims[i]*gates, dtype='float32'), name='b-%d' % i))
+      self.hparams.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='h-%d' % i))
+      self.hmasks.append(theano.shared(np.ones(dims[i]*gates, dtype='float32'), name='hmask-%d' % i))
+      self.h_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='h_0-%d' % i))
+      self.c_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='c_0-%d' % i))
     self.hmasks.extend([lib.hmask for lib in self.libs])
     
     #-----------------------------------------------------------------
@@ -824,7 +862,8 @@ class Encoder(Opt):
           xparam = T.concatenate([h_t[-1], h_tm1_l])
           s = sig(hparam)
 
-          a = T.dot(Wparam, xparam) + bparam
+          a = T.dot(Wparam, xparam) 
+          a += bparam
 
           c = func(a, s)
           h = c*hmask
@@ -935,7 +974,7 @@ class Encoder(Opt):
           z   = sig(aifo[sliceLen:2*sliceLen])/np.float32(4)
           o   = sig(aifo[2*sliceLen:])
 
-          c = z*a + (1-z)*c_tm1_l
+          c = z*a + (np.float32(1)-z)*c_tm1_l
           h = func(c*o, s)*hmask
 
           c_t.append(c)
@@ -958,7 +997,7 @@ class Encoder(Opt):
     if self.L1reg > 0:
       self.complexity += self.L1reg*T.sum([T.sum(T.abs_(Wparam)) for Wparam in self.Wparams])
       self.complexity += self.L1reg*T.sum([T.sum(T.abs_(xparam)) for lib, xparam in zip(self.libs, xparams) if lib.mutable()])
-                          
+ 
     if self.L2reg > 0:
       self.complexity += self.L2reg*T.sum([T.sum(T.sqr(Wparam)) for Wparam in self.Wparams])
       self.complexity += self.L2reg*T.sum([T.sum(T.sqr(xparam)) for lib, xparam in zip(self.libs, xparams) if lib.mutable()])
@@ -970,43 +1009,44 @@ class Encoder(Opt):
     self.idxs_to_vec = theano.function(
         inputs=[self.x],
         outputs=yhat,
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
     #===================================================================
     # Error
     self.idxs_to_err = theano.function(
         inputs=[self.x, self.y],
         outputs=self.error,
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
     #===================================================================
     # Complexity
     self.idxs_to_comp = theano.function(
         inputs=[self.x],
         outputs=self.complexity,
-        allow_input_downcast=True)
+        on_unused_input='ignore',
+        allow_input_downcast=False)
 
     #===================================================================
     # Cost
     self.idxs_to_cost = theano.function(
         inputs=[self.x, self.y],
         outputs=self.cost,
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
     #===================================================================
     # Update gradients
     batchSize = T.scalar('batchSize')
     paramVars =\
-        [T.matrix() for Wparam in self.Wparams] +\
-        [T.vector() for bparam in self.bparams] +\
-        [T.vector() for hparam in self.hparams] +\
-        [T.vector() for h_0_l in self.h_0] +\
-        ([T.vector() for c_0_l in self.c_0] if self.model.endswith('LSTM') else [])
+        [T.fmatrix() for Wparam in self.Wparams] +\
+        [T.fvector() for bparam in self.bparams] +\
+        [T.fvector() for hparam in self.hparams] +\
+        [T.fvector() for h_0_l in self.h_0] +\
+        ([T.fvector() for c_0_l in self.c_0] if self.model.endswith('LSTM') else [])
     self.update_grads = theano.function(
         inputs=[batchSize]+paramVars,
         outputs=[],
         updates=[(gparam, gparam+paramVar/batchSize) for gparam, paramVar in zip(self.gparams, paramVars)],
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
     #===================================================================
     # Reset gradients
@@ -1014,7 +1054,7 @@ class Encoder(Opt):
         inputs=[],
         outputs=[],
         updates=[(gparam, np.float32(0)*gparam) for gparam in self.gparams],
-        allow_input_downcast=True)
+        allow_input_downcast=False)
 
   #=====================================================================
   # Converts a list of strings or string tuples into a matrix
@@ -1238,19 +1278,19 @@ class Encoder(Opt):
     for worker in xrange(workers):
       dataQueue.put('STOP')
     for worker in xrange(workers):
-      process = mp.Process(target=func_worker, args=(dataQueue, costQueue, self.idxs_to_cost))
+      process = mp.Process(target=cost_worker, args=(self.idxs_to_cost, dataQueue, costQueue))
       process.start()
       processes.append(process)
     for worker in xrange(workers):
-      for subCost in iter(costQueue.get, 'STOP'):
-        cost += subCost
+      for miniCost in iter(costQueue.get, 'STOP'):
+        cost += miniCost
     for process in processes:
       process.join()
     return cost / len(dataset)
 
   #=====================================================================
   # Calculate the gradients of a minibatch using multiple cores
-  def train(self, dataset, optimizer, grader, batchSize=64, epochs=1, costEvery=None, testset=None, saveEvery=None, savePipe=None, workers=2):
+  def train(self, dataset, grader, optimizer, batchSize=64, epochs=1, costEvery=None, testset=None, saveEvery=None, savePipe=None, workers=2):
     """"""
 
     #-------------------------------------------------------------------
@@ -1264,11 +1304,11 @@ class Encoder(Opt):
     minibatchd = str(int(np.log10(len(dataset)/batchSize))+1)
     s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (0,0)
     cost = []
-    cost.append(self.cost(dataset, workers))
+    cost.append(self.batch_cost(dataset, workers))
     s += ': %.3f train error' % cost[-1]
     if testset is not None:
       test = []
-      test.append(self.cost(testset, workers))
+      test.append(self.batch_cost(testset, workers))
       s += ', %.3f test error' % test[-1]
     wps = 0.0
     s += ', %.1f data per second' % wps
@@ -1291,37 +1331,30 @@ class Encoder(Opt):
       for mb in xrange(len(dataset)/batchSize):
         processes = []
         for datum in dataset[mb*batchSize:(mb+1)*batchSize]:
-          dataQueue.put(datum)
+          sidxs = []
           for i, lib in enumerate(self.libs):
             if lib.mutable():
-              lib.update_gidxs(self.x[:,i])
+              sidxs.append(datum[0][:,i])
+          dataQueue.put(datum+tuple(sidxs))
         for worker in xrange(workers):
           dataQueue.put('STOP')
         for worker in xrange(workers):
-          process = mp.Process(target=func_worker, args=(dataQueue, gradQueue, grader))
+          process = mp.Process(target=grad_worker, args=(grader, dataQueue, gradQueue, nmutables))
           process.start()
           processes.append(process)
         for worker in xrange(workers):
           for grads in iter(gradQueue.get, 'STOP'):
-            recentCost.append(grads[0])
+            recentCost.append(grads['cost'])
+            self.update_grads(batchSize, *grads['grads'])
             if nmutables > 0:
-              idxs = grads[1]
-              gidxs = []
-              owngrads = grads[2:-nmutables]
-              libgrads = grads[-nmutables:]
-              self.update_grads(batchSize, *owngrads)
-              j = 0
-              for i, lib in enumerate(self.libs):
+              i = 0
+              for lib in self.libs:
                 if lib.mutable():
-                  lib.update_lib_grads(batchSize, libgrads[j], idxs[:,i])
-                  gidxs.append(lib.gidxs())
-                  j += 1
-            else:
-              self.update_grads(batchSize, *grads[2:])
-              gidxs = []
+                  lib.update_lib_grads(batchSize, grads['sgrads'][i])
+                  i += 1
         for process in processes:
           process.join()
-        optimizer(gidxs)
+        optimizer(*[lib.gidxs() for lib in self.libs])
         self.reset_grad()
         for lib in self.libs:
           lib.reset_lib_grads()
@@ -1332,7 +1365,7 @@ class Encoder(Opt):
           cost.append(np.sum(recentCost)/(batchSize*costEvery))
           recentCost = []
           if testset is not None:
-            test.append(self.cost(testset, workers))
+            test.append(self.batch_cost(testset, workers))
           thisCostTime = time.time()
         if saveEvery is not None and (mb+1) % saveEvery == 0:
           savePipe.send((cost,) + ((test,) if testset is not None else tuple()))
@@ -1361,7 +1394,7 @@ class Encoder(Opt):
         cost.append(np.sum(recentCost)/(len(dataset) - mb*batchSize))
         recentCost = []
         if testset is not None:
-          test.append(self.cost(testset, workers))
+          test.append(self.batch_cost(testset, workers))
         thisCostTime = time.time()
       if saveEvery is not None and (mb+1) % saveEvery != 0:
         savePipe.send((cost,) + ((test,) if testset is not None else tuple()))
@@ -1395,13 +1428,37 @@ class Encoder(Opt):
 if __name__ == '__main__':
   """"""
 
+  import os.path
+  WORKERS = 2
+  EPOCHS = 1
+  PATH = '.'
+  
   glove = pkl.load(open('glove.6B.10k.50d-real.pkl'))
   dataset = zip([list(x) for x in sorted(glove[1], key=glove[1].get)], glove[0])
   vocab = set()
   for datum in dataset:
     vocab.update(datum[0])
   lib = Library(keys=vocab, mat=50)
-  encoder = Encoder([lib], [100,100,50])
+  encoder = Encoder([lib], [200,50])
   encoder.convert_dataset(dataset)
+  train_data = dataset[:int(.8*len(dataset))]
+  dev_data = dataset[int(.8*len(dataset)):int(.9*len(dataset))]
+  test_data = dataset[int(.9*len(dataset)):]
+  grads, opt = encoder.SGD()
+  
+  parentPipe, childPipe = mp.Pipe()
+  process = mp.Process(target=encoder.train, args=(train_data, grads, opt), kwargs={'savePipe': childPipe, 'costEvery': 10, 'workers': WORKERS, 'epochs': EPOCHS, 'testset': dev_data})
+  process.start()
+  i = 0
+  msg = 'START'
+  while msg != 'STOP':
+    msg = parentPipe.recv() #Always pickles at the end
+    if msg != 'START':
+      i+=1
+      pkl.dump(msg, open(os.path.join(PATH, 'cost-%02d.pkl' % i), 'w'))
+      pkl.dump(encoder, open(os.path.join(PATH, 'state-%02d.pkl' % i), 'w'), protocol=pkl.HIGHEST_PROTOCOL)
+ 
+  process.join()
+
   print 'Works!'
 
