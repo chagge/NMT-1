@@ -72,7 +72,11 @@ def matwizard(*dims, **kwargs):
     spar = kwargs['spar']
   else:
     spar = 1.
-
+  
+  if 'sigmoid_output' in kwargs:
+    sigmoid_output = kwargs['sigmoid_output']
+  else:
+    sigmoid_output = False
   if 'relu_input' in kwargs:
     relu_input = kwargs['relu_input']
   else:
@@ -99,7 +103,7 @@ def matwizard(*dims, **kwargs):
   # Rectangular matrix
   if shape == 'rect':
     mat = np.ones(dims)
-    mat *= np.random.normal(0,1, size=dims)
+    mat *= np.random.randn(*dims)
     if spar < 1:
       mask = np.random.binomial(1, spar, dims)
       mat *= mask
@@ -110,7 +114,7 @@ def matwizard(*dims, **kwargs):
   # Upper triangular matrix
   elif shape == 'triang':
     mat = triangle(dims)
-    mat *= np.random.normal(0,1, size=dims)
+    mat *= np.random.randn(*dims)
   #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   # Tridiagonal matrix
   elif shape == 'tridiag':
@@ -119,18 +123,23 @@ def matwizard(*dims, **kwargs):
   # Diagonal matrix
   elif shape == 'diag':
     mat = diagonal(dims)
-  nonzero_elts = np.sum(np.not_equal(mat, 0), axis=1, keepdims=True)
+    
+  #---------------------------------------------------------------------
+  # Normalize by row
+  if len(dims) > 1:
+    mat /= np.sqrt(np.sum(np.not_equal(mat, 0), axis=1, keepdims=True))
 
   #---------------------------------------------------------------------
   # Generate random values
   if relu_output:
-    mat *= (1./np.sqrt(1-2/np.pi))
+    mat *= 1./np.sqrt(1-2/np.pi)
+  elif sigmoid_output:
+    mat *= np.arctanh(np.sqrt(1./3))
   else:
-    mat *= (np.arctanh(np.sqrt(1./3)))
+    mat *= np.arctanh(np.sqrt(1./3))/.75
 
   #---------------------------------------------------------------------
   # Account for the size of the input vector
-  mat /= np.sqrt(nonzero_elts)
   if relu_input:
     mat *= np.sqrt(2.)
 
