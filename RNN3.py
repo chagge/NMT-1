@@ -11,9 +11,12 @@ import time
 sys.setrecursionlimit(50000)
 from theano.tensor.shared_randomstreams import RandomStreams
 srng = RandomStreams()
-#TODO have the recurrent functions in Encoder and Decoder apply their final output to another (potentially dummy) function, and use that output for recurrence (at least in Decoder)--this should simplify the EncoderDecoder class
 #TODO Add a copies of train and batch_cost that don't use multiprocessing, but don't delete the ones that do
 #TODO build word2vec and/or GloVe capabilities into Library
+#TODO try with mnist and cifar10 cifar100 if you want to make life hard
+#TODO read pascal vincent in iclr 2015
+#TODO prepare for attention models by adding a parameter to Decoder
+#TODO change how the cost is saved
 
 #***********************************************************************
 # Helper functions
@@ -32,61 +35,109 @@ def absolute_difference(output, target):
   return T.abs_(output-target)
 
 #=======================================================================
-# Logistic sigmoid
-def sig(x):
+# Soft step function / Logistic sigmoid
+def softstep(x):
   """"""
   
-  #return np.float32(4)*T.nnet.sigmoid(np.float32(2)*x)
   return T.nnet.sigmoid(np.float32(2)*x)
 
 #=======================================================================
-# Hyperbolic tangent 
-def tanh(x):
+# Sharp step function 
+def sharpstep(x):
+  """"""
+  
+  return T.switch(x > 1, np.float32(1), T.switch(x < -1, np.float32(0), (x+np.float32(1))/np.float32(2)))
+
+#=======================================================================
+# Soft sign function / Hyperbolic tangent
+def softsign(x):
   """"""
   
   return T.tanh(x)
-  
-#=======================================================================
-# Softplus
-def softplus(x):
-  """"""
-  
-  return T.log(np.float32(1) + T.exp(np.float32(2)*x))/np.float32(np.log(2))
 
 #=======================================================================
-# Gaussian (not yet implemented)
-def gauss(x):
+# Sharp sign function 
+def sharpsign(x):
   """"""
   
-  return T.sqr(T.stanh(x))
+  return T.switch(x > 1, np.float32(1), T.switch(x < -1, np.float32(-1), x))
 
 #=======================================================================
-# Rectifier
-def relu(x):
+# Soft absolute value
+def softabs(x):
+  """"""
+  
+  return T.log(np.float32(2)*T.cosh(x)) - T.log(np.float32(2))
+
+#=======================================================================
+# Sharp absolute value
+def sharpabs(x):
+  """"""
+  
+  return T.abs_(x)
+
+#=======================================================================
+# Soft rectifier function / Softplus function
+def softpo(x):
+  """"""
+  
+  return T.nnet.softplus(np.float32(2)*x)/np.float32(2)
+  
+#=======================================================================
+# Sharp rectifier function / ReLU
+def sharppo(x):
   """"""
   
   return T.switch(x > 0, x, np.float32(0))
 
 #=======================================================================
-# Interpolater between tanh and softplus
-def func(x, lamda):
+# Soft truth function / bathtub function
+def softbool(x):
   """"""
+  
+  return T.sqr(T.tanh(x))
 
-  s = sig(lamda)
-  return s*tanh(x) + (np.float32(1)-s)*softplus(x)
+#=======================================================================
+# Sharp truth function
+def sharpbool(x):
+  """"""
+  
+  return T.switch(x > 1, np.float32(1), T.switch(x < -1, np.float32(-1), T.abs_(x)))
+
+#=======================================================================
+# Soft positive function
+def softpos(x):
+  """"""
+  
+  return T.sqr(T.nnet.sigmoid(np.float32(2)*x))
+
+#=======================================================================
+# Sharp positive function
+def sharppos(x):
+  """"""
+  
+  return T.switch(x > 1, np.float32(1), T.switch(x < 0, np.float32(0), x))
+
+#=======================================================================
+# Soft max function
+def softmax(x):
+  """"""
+  
+  #return T.nnet.softmax(np.float32(2)*T.log(x.shape[0])*x) #Fastmax
+  return T.nnet.softmax(2*x) #Slowmax
 
 #=======================================================================
 # Cost worker function
 def cost_worker(cost_func, dataQueue, outQueue):
   """"""
 
-  store = 0
+  store = np.float32(0)
   for datum in iter(dataQueue.get, 'STOP'):
+    
     store += cost_func(*datum)
   if store != 0:
     outQueue.put(store)
   outQueue.put('STOP')
-  #print 'Worker is done with %s; size: %d' % (str(func), dataQueue.qsize())
   return True
 
 #=======================================================================
@@ -128,9 +179,60 @@ def grad_worker(grad_func, dataQueue, outQueue, nmutables=0):
   outQueue.put('STOP')
   return True
 
+#=======================================================================
+# Pickling worker function
+def pkl_worker(childPipe, path='.', name=''):
+  """"""
+  
+  i = 0
+  msg = 'START'
+  while msg != 'STOP':
+    msg = childPipe.recv()
+    if msg not in ('START', 'STOP'):
+      i += 1
+      pkl.dump(msg[0], open(os.path.join(path, '%sstate-%02d.pkl' % (name, i)), 'w'), protocol=pkl.HIGHEST_PROTOCOL)
+      pkl.dump(msg[1:], open(os.path.join(path, '%scost-%02d.pkl' % (name, i)), 'w'))
+  return True
+
+tanh = softsign
+hardtanh = sharpsign
+sig = softstep
+sigmoid = softstep
+abs = sharpabs
+softplus = softpo
+relu = sharppo
+tub = softbool
+
+#=======================================================================
+# Shortcuts
+funx = {
+        'softsign': softsign,
+        'sharpsign': sharpsign,
+        'softstep': softstep,
+        'sharpstep': sharpstep,
+        'softabs': softabs,
+        'sharpabs': sharpabs,
+        'softpo': softpo,
+        'sharppo': sharppo,
+        'softbool': softbool,
+        'sharpbool': sharpbool,
+        'softpos': softpos,
+        'sharppos': sharppos,
+        
+        'tanh': softsign,
+        'hardtanh': sharpsign,
+        'sig': softstep,
+        'sigmoid': softstep,
+        'abs': sharpabs,
+        'softplus': softpo,
+        'relu': sharppo,
+        'tub': softbool,
+        
+        'softmax': softmax,
+  }
+  
 #***********************************************************************
 # A library
-# TODO build in word2vec and/or GloVe capabilities 
 class Library():
   """"""
 
@@ -185,10 +287,11 @@ class Library():
     #-------------------------------------------------------------------
     # Set up the matrix
     if isinstance(mat, int):
-      mat = np.random.normal(0, .75, size=(len(keys), mat))
+      mat = np.random.normal(0, 1, size=(len(keys), mat))
       self._mutable = True
     else:
       assert len(mat) == len(keys)
+      mat = (mat-np.mean(mat))/np.std(mat)
     self._wsize = mat.shape[1]
     
     #-------------------------------------------------------------------
@@ -245,11 +348,16 @@ class Library():
   def update_lib_grads(self, batchSize, sgrads):
     """"""
 
-    gidxs = np.empty(len(sgrads), dtype='int32')
-    grads = np.empty((len(sgrads), self.wsize()), dtype='float32')
-    for i, pair in enumerate(sgrads.iteritems()):
-      gidxs[i] = pair[0]
-      grads[i] = pair[1]
+    if isinstance(sgrads, dict):
+      gidxs = np.zeros(len(sgrads), dtype='int32')
+      grads = np.zeros((len(sgrads), self.wsize()), dtype='float32')
+      for i, pair in enumerate(sgrads.iteritems()):
+        gidxs[i] = pair[0]
+        grads[i] = pair[1]
+    elif isinstance(sgrads, (tuple, list)):
+      print sgrads
+      gidxs = np.array(sgrads[0])
+      grads = np.array(sgrads[1])
     self.update_grads(batchSize, grads, gidxs)
     self.update_gidxs(gidxs)
 
@@ -352,7 +460,7 @@ class Library():
 
     if not hasattr(strs, '__iter__'):
       strs = [strs]
-    return np.array([[self.idxs[s] for s in strs]], dtype='int32')
+    return np.array([[self.idxs[s]] for s in strs], dtype='int32')
 
   #=====================================================================
   # Convert idxs to strs 
@@ -388,7 +496,7 @@ class Library():
 # An interface for optimization functions
 class Opt:
   """"""
-      
+
   #=====================================================================
   # Run SGD (with NAG)
   def SGD(self, eta_0=.01, T_eta=1, mu_max=.95, T_mu=1, dropout=1., anneal=0, accel=0):
@@ -447,14 +555,14 @@ class Opt:
     #-------------------------------------------------------------------
     # Set up the dropout
     if dropout < 1:
-      for hmask in hmasks:
+      for hmask in self.hmasks:
         givens.append((hmask, srng.binomial(hmask.shape, 1, dropout, dtype='float32')))
 
     #-------------------------------------------------------------------
     # Compile the gradient function
     grads = theano.function(
         inputs=[self.x, self.y]+gidxs,
-        outputs=gidxs+[self.cost]+T.grad(self.cost, self.params+self.sparams),
+        outputs=gidxs+[self.cost]+T.grad(self.cost, self.params+self.xparams),
         givens=givens,
         allow_input_downcast=False)
         
@@ -542,14 +650,14 @@ class Opt:
     #-------------------------------------------------------------------
     # Set up the dropout
     if dropout < 1:
-      for hmask in hmasks:
+      for hmask in self.hmasks:
         givens.append((hmask, srng.binomial(hmask.shape, 1, dropout, dtype='float32')))
 
     #-------------------------------------------------------------------
     # Compile the gradient function
     grads = theano.function(
         inputs=[self.x, self.y]+gidxs,
-        outputs=gidxs+[self.cost]+T.grad(self.cost, self.params+self.sparams),
+        outputs=gidxs+[self.cost]+T.grad(self.cost, self.params+self.xparams),
         givens=givens,
         allow_input_downcast=False)
         
@@ -637,14 +745,14 @@ class Opt:
     #-------------------------------------------------------------------
     # Set up the dropout
     if dropout < 1:
-      for hmask in hmasks:
+      for hmask in self.hmasks:
         givens.append((hmask, srng.binomial(hmask.shape, 1, dropout, dtype='float32')))
 
     #-------------------------------------------------------------------
     # Compile the gradient function
     grads = theano.function(
         inputs=[self.x, self.y]+gidxs,
-        outputs=gidxs+[self.cost]+T.grad(self.cost, self.params+self.sparams),
+        outputs=gidxs+[self.cost]+T.grad(self.cost, self.params+self.xparams),
         givens=givens,
         allow_input_downcast=False)
         
@@ -733,14 +841,14 @@ class Opt:
     #-------------------------------------------------------------------
     # Set up the dropout
     if dropout < 1:
-      for hmask in hmasks:
+      for hmask in self.hmasks:
         givens.append((hmask, srng.binomial(hmask.shape, 1, dropout, dtype='float32')))
 
     #-------------------------------------------------------------------
     # Compile the gradient function
     grads = theano.function(
         inputs=[self.x, self.y]+gidxs,
-        outputs=gidxs+[self.cost]+T.grad(self.cost, self.params+self.sparams),
+        outputs=gidxs+[self.cost]+T.grad(self.cost, self.params+self.xparams),
         givens=givens,
         allow_input_downcast=False)
         
@@ -759,7 +867,447 @@ class Opt:
     return grads, opt
 
 #***********************************************************************
-# A multilayer basic recurrent neural encoder
+# A multilayer neural classifier
+class Classifier(Opt):
+  """"""
+  
+  #=====================================================================
+  # Initialize the network
+  def __init__(self, libs, dims, **kwargs):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Keyword arguments
+    if 'sharelib' in kwargs:
+      self.sharelib = np.float32(kwargs['sharelib'])
+    else:
+      self.sharelib = False
+    
+    if 'hfunc' in kwargs:
+      self.hfunc = kwargs['hfunc']
+    else:
+      self.hfunc = 'tanh'
+
+    if 'L1reg' in kwargs:
+      self.L1reg = np.float32(kwargs['L1reg'])
+    else:
+      self.L1reg = np.float32(0)
+
+    if 'L2reg' in kwargs:
+      self.L2reg = np.float32(kwargs['L2reg'])
+    else:
+      self.L2reg = np.float32(0)
+
+    self.sparams = []
+    self.gsparams = []
+    
+    self.Wparams  = []
+    self.Wbparams = []
+    self.Lparams  = []
+    self.Lbparams = []
+    self.hmasks   = []
+    
+    #-------------------------------------------------------------------
+    # Initialize the model params
+    for i in xrange(1, len(dims)):
+      self.Wparams.append(theano.shared(matwizard(dims[i], dims[i-1], output=self.hfunc, imput=(self.hfunc if i > 1 else '')).T, name='W-%d' % i))
+      self.Wbparams.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='b-%d' % i))
+      self.hmasks.append(theano.shared(np.ones(dims[i], dtype='float32'), name='hmask-%d' % i))
+      
+    #-------------------------------------------------------------------
+    # Initialize the classifier params
+    self.libs = []
+    ldims = []
+    for l, lib in enumerate(libs):
+      if not isinstance(lib, Library):
+        lib = Library(*lib)
+      self.libs.append(lib)
+      ldims.append(lib.wsize())
+      if self.sharelib:
+        assert lib.wsize() == dims[-1]
+        lib.L.name = 'W%d-L%d' % (i+1, l)
+        self.Lparams.append(lib.L)
+      else:
+        self.Lparams.append(theano.shared(matwizard(len(lib.idxs), dims[-1], output='softmax', spar=15).T, name='W%d-L%d' % (i+1, l)))
+      self.Lbparams.append(theano.shared(np.zeros(len(lib.idxs), dtype='float32'), name='b%d-L%d' % (i+1, l)))
+    #-------------------------------------------------------------------
+    # Build the input/output variables
+    self.x = T.fmatrix('x')
+    self.y = T.imatrix('y')
+    
+    #-------------------------------------------------------------------
+    # Bundle the params
+    self.params =\
+        self.Wparams +\
+        self.Lparams +\
+        self.Wbparams +\
+        self.Lbparams
+    self.gparams = [theano.shared(np.zeros_like(param.get_value()), name='g'+param.name) for param in self.params]
+    
+    self.h = [self.x]
+    for Wparam, Wbparam, hmask in zip(self.Wparams, self.Wbparams, self.hmasks):
+      a = T.dot(self.h[-1], Wparam)
+      a += Wbparam
+      h = funx[self.hfunc](a)*hmask
+      self.h.append(h)
+    self.o = []
+    for Lparam, Lbparam in zip(self.Lparams, self.Lbparams):
+      a = T.dot(self.h[-1], (Lparam.T if self.sharelib else Lparam))
+      a += Lbparam
+      o = softmax(a)
+      self.o.append(o)
+    self.m = [T.argmax(o, axis=1) for o in self.o]
+    
+    #-------------------------------------------------------------------
+    # Build the cost variable
+    self.error = np.float32(0)
+    for i in xrange(len(self.o)):
+      self.error += T.nnet.categorical_crossentropy(self.o[i], self.y[:,i])
+    self.error = T.mean(self.error)
+    
+    self.complexity = theano.shared(np.float32(0))
+    if self.L1reg > 0:
+      self.complexity += self.L1reg*T.sum([T.sum(T.abs_(Wparam)) for Wparam in self.Wparams])
+      self.complexity += self.L1reg*T.sum([T.sum(T.abs_(Lparam)) for Lparam in self.Lparams])
+    if self.L2reg > 0:
+      self.complexity += self.L2reg*T.sum([T.sum(T.sqr(Wparam)) for Wparam in self.Wparams])
+      self.complexity += self.L2reg*T.sum([T.sum(T.sqr(Lparam)) for Wparam in self.Lparams])
+    
+    self.cost = self.error + self.complexity
+    
+    #===================================================================
+    # Activate
+    self.vecs_to_vecs = theano.function(
+      inputs=[self.x],
+      outputs=self.o,
+      allow_input_downcast=False)
+    
+    #===================================================================
+    # Predict
+    self.vecs_to_idxs = theano.function(
+      inputs=[self.x],
+      outputs=self.m,
+      allow_input_downcast=False)
+    
+    #===================================================================
+    # Error
+    self.vecs_to_error = theano.function(
+      inputs=[self.x, self.y],
+      outputs=self.error,
+      allow_input_downcast=False)
+    
+    #===================================================================
+    # Complexity
+    self.vecs_to_comp = theano.function(
+      inputs=[self.x],
+      outputs=self.complexity,
+      on_unused_input='ignore',
+      allow_input_downcast=False)
+    
+    #===================================================================
+    # Cost
+    self.vecs_to_cost = theano.function(
+      inputs=[self.x, self.y],
+      outputs=self.cost,
+      allow_input_downcast=False)
+    
+    #===================================================================
+    # Update gradients
+    batchSize = T.scalar('batchSize')
+    paramVars =\
+      [T.fmatrix() for Wparam in self.Wparams] +\
+      [T.fmatrix() for Lparam in self.Lparams] +\
+      [T.fvector() for Wbparam in self.Wbparams] +\
+      [T.fvector() for Lbparam in self.Lbparams]
+    self.update_grads = theano.function(
+      inputs=[batchSize]+paramVars,
+      outputs=[],
+      updates=[(gparam, gparam+paramVar/batchSize) for gparam, paramVar in zip(self.gparams, paramVars)],
+      allow_input_downcast=False)
+    
+    #===================================================================
+    # Reset gradients
+    self.reset_grad = theano.function(
+      inputs=[],
+      outputs=[],
+      updates=[(gparam, np.float32(0)*gparam) for gparam in self.gparams],
+      allow_input_downcast=False)
+  
+  #=====================================================================
+  # Convert the dataset to the expected format
+  def convert_dataset(self, dataset):
+    """"""
+    
+    return (np.array([datum[0] for datum in dataset]).astype('float32'), np.array([datum[1] for datum in dataset]).astype('int32'))
+  
+  #=====================================================================
+  # Calculate the cost of a minibatch using multiple processes
+  def mp_batch_cost(self, dataset, workers=2):
+    """"""
+    
+    cost = 0
+    dataQueue = mp.Queue()
+    costQueue = mp.Queue()
+    processes = []
+    miniSize = int(len(dataset)/workers)
+    i = -1
+    for i in xrange(workers-1):
+      dataQueue.put((dataset[0][i*miniSize:(i+1)*miniSize], dataset[1][i*miniSize:(i+1)*miniSize]))
+    dataQueue.put((dataset[0][(i+1)*miniSize:], dataset[1][(i+1)*miniSize:]))
+    for worker in xrange(workers):
+      dataQueue.put('STOP')
+    for worker in xrange(workers):
+      process = mp.Process(target=cost_worker, args=(self.vecs_to_cost, dataQueue, costQueue))
+      process.start()
+      processes.append(process)
+    for worker in xrange(workers):
+      for miniCost in iter(costQueue.get, 'STOP'):
+        cost += miniCost
+    for process in processes:
+      process.join()
+    return cost / len(dataset)
+  
+  #=====================================================================
+  # Calculate the cost of the whole dataset
+  def batch_cost(self, dataset):
+    """"""
+    
+    return self.vecs_to_cost(*dataset)
+    
+  #=====================================================================
+  # Calculate the gradients of a minibatch using multiple cores
+  def train(self, dataset, grader, optimizer, batchSize=64, epochs=1, costEvery=None, testset=None, saveEvery=None, savePipe=None):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Saving and printing
+    s = ''
+    epochd = str(int(np.log10(epochs))+1)
+    minibatchd = str(int(np.log10(len(dataset[0])/batchSize))+1)
+    s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') %(0,0)
+    cost = []
+    cost.append(self.batch_cost(dataset))
+    s += ': %.3f train error' % cost[-1]
+    if testset is not None:
+      test = []
+      test.append(self.batch_cost(testset))
+      s += ', %.3f test error' % test[-1]
+    wps = 0.0
+    s += ', %.1f data per second' % wps
+    if saveEvery is not None:
+      savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+      lastSaveTime = time.time()
+      s += ', %.1f minutes since saving' % ((time.time()-lastSaveTime)/60)
+    s += '        \r'
+    print s,
+    sys.stdout.flush()
+    lastCostTime = time.time()
+    
+    #-------------------------------------------------------------------
+    # Multiprocessing the minibatch
+    recentCost = []
+    for t in xrange(epochs):
+      dataidxs = np.arange(len(dataset[0]))
+      np.random.shuffle(dataidxs)
+      for mb in xrange(len(dataset[0])/batchSize):
+        grad_info = grader(dataset[0][dataidxs[mb*batchSize:(mb+1)*batchSize]], dataset[1][dataidxs[mb*batchSize:(mb+1)*batchSize]])
+        recentCost.append(grad_info[0])
+        self.update_grads(batchSize, *grad_info[1:])
+        optimizer()
+        self.reset_grad()
+    
+        #---------------------------------------------------------------
+        # More printing and saving
+        if costEvery is not None and (mb+1) % costEvery == 0:
+          cost.append(np.mean(recentCost))
+          recentCost = []
+          if testset is not None:
+            test.append(self.batch_cost(testset))
+          thisCostTime = time.time()
+        if saveEvery is not None and (mb+1) % saveEvery == 0:
+          savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+          lastSaveTime = time.time()
+        if costEvery is not None and (mb+1) % costEvery == 0:
+          s = ''
+          s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (t+1, mb+1)
+          s += ': %.3f train error' % cost[-1]
+          if testset is not None:
+            s += ': %.3f test error' % test[-1]
+          if wps == 0:
+            wps = ((batchSize * costEvery) / (thisCostTime-lastCostTime))
+          else:
+            wps = .67*wps + .33*((batchSize*costEvery) / (thisCostTime-lastCostTime))
+          s += ', %.1f data per second' % wps
+          if saveEvery is not None:
+            s += ', %.1f minutes since saving' % (time.time()-lastSaveTime)
+          s += '        \r'
+          print s,
+          sys.stdout.flush()
+          lastCostTime = time.time()
+
+      #-----------------------------------------------------------------
+      # If we haven't been printing, print now
+      if not (costEvery is not None and (mb+1) % costEvery == 0):
+        cost.append(np.mean(recentCost))
+        recentCost = []
+        if testset is not None:
+          test.append(self.batch_cost(testset))
+        thisCostTime = time.time()
+      if saveEvery is not None and (mb+1) % saveEvery != 0:
+        savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+        lastSaveTime = time.time()
+      s = ''
+      s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (t+1,mb+1)
+      s += ': %.3f train error' % cost[-1]
+      if testset is not None:
+        s += ': %.3f test error' % test[-1]
+      if wps == 0:
+        wps = .67*wps + .33*((batchSize*((mb+1) % costEvery) if costEvery is not None else len(dataset[0])) / (thisCostTime-lastCostTime))
+      s += ', %.1f data per second' % wps
+      if saveEvery is not None:
+        s += ', %.1f minutes since saving' % ((time.time() - lastSaveTime)/60)
+      s += '        \r'
+      print s
+      sys.stdout.flush()
+      if costEvery is None or (mb+1) % costEvery != 0:
+        lastCostTime = time.time()
+    
+    #-------------------------------------------------------------------
+    # Wrap everything up
+    if savePipe is not None:
+      savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+      savePipe.send('STOP')
+    print ''
+    return cost
+  
+  #=====================================================================
+  # Calculate the gradients of a minibatch using multiple cores
+  def mp_train(self, dataset, grader, optimizer, batchSize=64, epochs=1, costEvery=None, testset=None, saveEvery=None, savePipe=None, workers=2):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Saving and printing
+    s = ''
+    epochd = str(int(np.log10(epochs))+1)
+    minibatchd = str(int(np.log10(len(dataset[0])/batchSize))+1)
+    s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') %(0,0)
+    cost = []
+    cost.append(self.mp_batch_cost(dataset, workers))
+    s += ': %.3f train error' % cost[-1]
+    if testset is not None:
+      test = []
+      test.append(self.mp_batch_cost(testset, workers))
+      s += ', %.3f test error' % test[-1]
+    wps = 0.0
+    s += ', %.1f data per second' % wps
+    if saveEvery is not None:
+      savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+      lastSaveTime = time.time()
+      s += ', %.1f minutes since saving' % ((time.time()-lastSaveTime)/60)
+    s += '        \r'
+    print s,
+    sys.stdout.flush()
+    lastCostTime = time.time()
+    
+    #-------------------------------------------------------------------
+    # Multiprocessing the minibatch
+    dataQueue = mp.Queue()
+    gradQueue = mp.Queue()
+    recentCost = []
+    for t in xrange(epochs):
+      dataidxs = np.arange(len(dataset[0]))
+      np.random.shuffle(dataidxs)
+      for mb in xrange(len(dataset[0])/batchSize):
+        processes = []
+        miniSize = int(batchSize/workers)
+        i = -1
+        for i in xrange(workers-1):
+          dataQueue.put((dataset[0][dataidxs[i*miniSize:(i+1)*miniSize]], dataset[1][dataidxs[i*miniSize:(i+1)*miniSize]]))
+        dataQueue.put((dataset[0][dataidxs[(i+1)*miniSize:]], dataset[1][dataidxs[(i+1)*miniSize:]]))
+        for worker in xrange(workers):
+          dataQueue.put('STOP')
+        for worker in xrange(workers):
+          process = mp.Process(target=grad_worker, args=(grader, dataQueue, gradQueue))
+          process.start()
+          processes.append(process)
+        for worker in xrange(workers):
+          for grads in iter(gradQueue.get, 'STOP'):
+            recentCost.append(grads['cost'])
+            self.update_grads(batchSize, *grads['grads'])
+        for process in processes:
+          process.join()
+        optimizer()
+        self.reset_grad()
+        sys.exit()
+    
+        #---------------------------------------------------------------
+        # More printing and saving
+        if costEvery is not None and (mb+1) % costEvery == 0:
+          cost.append(np.sum(recentCost)/(batchSize*costEvery))
+          recentCost = []
+          if testset is not None:
+            test.append(self.mp_batch_cost(testset, workers))
+          thisCostTime = time.time()
+        if saveEvery is not None and (mb+1) % saveEvery == 0:
+          savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+          lastSaveTime = time.time()
+        if costEvery is not None and (mb+1) % costEvery == 0:
+          s = ''
+          s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (t+1, mb+1)
+          s += ': %.3f train error' % cost[-1]
+          if testset is not None:
+            s += ': %.3f test error' % test[-1]
+          if wps == 0:
+            wps = ((batchSize * costEvery) / (thisCostTime-lastCostTime))
+          else:
+            wps = .67*wps + .33*((batchSize*costEvery) / (thisCostTime-lastCostTime))
+          s += ', %.1f data per second' % wps
+          if saveEvery is not None:
+            s += ', %.1f minutes since saving' % (time.time()-lastSaveTime)
+          s += '        \r'
+          print s,
+          sys.stdout.flush()
+          lastCostTime = time.time()
+
+      #-----------------------------------------------------------------
+      # If we haven't been printing, print now
+      if costEvery is None or (mb+1) % costEvery != 0:
+        if costEvery is None:
+          cost.append(np.sum(recentCost)/len(dataset[0]))
+        else:
+          cost.append(np.sum(recentCost)/(len(dataset[0]) % (batchSize*costEvery)))
+        recentCost = []
+        if testset is not None:
+          test.append(self.batch_cost(testset, workers))
+        thisCostTime = time.time()
+      if saveEvery is not None and (mb+1) % saveEvery != 0:
+        savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+        lastSaveTime = time.time()
+      s = ''
+      s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (t+1,mb+1)
+      s += ': %.3f train error' % cost[-1]
+      if testset is not None:
+        s += '" %.3f test error' % test[-1]
+      if wps == 0:
+        wps = .67*wps + .33*((batchSize*((mb+1) % costEvery) if costEvery is not None else len(dataset[0])) / (thisCostTime-lastCostTime))
+      s += ', %.1f data per second' % wps
+      if saveEvery is not None:
+        s += ', %.1f minutes since saving' % ((time.time() - lastSaveTime)/60)
+      s += '        \r'
+      print s, sys.stdout.flush()
+      if costEvery is None or (mb+1) % costEvery != 0:
+        lastCostTime = time.time()
+    
+    #-------------------------------------------------------------------
+    # Wrap everything up
+    if savePipe is not None:
+      savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+      savePipe.send('STOP')
+    print ''
+    return cost
+  
+#***********************************************************************
+# A multilayer recurrent neural encoder
 class Encoder(Opt):
   """"""
 
@@ -774,7 +1322,12 @@ class Encoder(Opt):
       self.model = kwargs['model']
     else:
       self.model = 'RNN'
-    
+
+    if 'hfunc' in kwargs:
+      self.hfunc = kwargs['hfunc']
+    else:
+      self.hfunc = 'tanh'
+
     if 'window' in kwargs:
       self.window = np.float32(kwargs['window'])
     else:
@@ -791,7 +1344,7 @@ class Encoder(Opt):
       self.L1reg = np.float32(0)
 
     if 'L2reg' in kwargs:
-      self.L2reg = np.float32(kwargs['L1reg'])
+      self.L2reg = np.float32(kwargs['L2reg'])
     else:
       self.L2reg = np.float32(0)
 
@@ -813,7 +1366,6 @@ class Encoder(Opt):
       ldims.append(lib.wsize())
     ldims = np.sum(ldims)*self.window
     assert dims[0] == ldims
-    #dims.insert(0, ldims)
 
     #-------------------------------------------------------------------
     # Initialize the model params
@@ -826,20 +1378,18 @@ class Encoder(Opt):
 
     self.Wparams = []
     self.bparams = []
-    self.hparams = []
     self.h_0     = []
     self.hmasks  = []
     self.c_0   = []
 
     for i in xrange(1, len(dims)):
-      W = matwizard(dims[i], dims[i-1], shape = 'rect')
-      U = matwizard(dims[i], dims[i], shape='diag')
+      W = matwizard(dims[i], dims[i-1], shape='rect', func=self.hfunc)
+      U = matwizard(dims[i], dims[i], shape='diag', func=self.hfunc)
       if gates > 1:
-        W = np.concatenate([W, matwizard(dims[i]*(gates-1), dims[i-1], sigmoid_output=True)], axis=0)
-        U = np.concatenate([U, matwizard(dims[i]*(gates-1), dims[i], sigmoid_output=True)], axis=0)
+        W = np.concatenate([W, matwizard(dims[i]*(gates-1), dims[i-1], func='sigmoid')], axis=0)
+        U = np.concatenate([U, matwizard(dims[i]*(gates-1), dims[i], func='sigmoid')], axis=0)
       self.Wparams.append(theano.shared(np.concatenate([W, U], axis=1), name='W-%d' % i))
       self.bparams.append(theano.shared(np.zeros(dims[i]*gates, dtype='float32'), name='b-%d' % i))
-      self.hparams.append(theano.shared(matwizard(dims[i], sigmoid_output=True), name='h-%d' % i))
       self.hmasks.append(theano.shared(np.ones(dims[i], dtype='float32'), name='hmask-%d' % i))
       self.h_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='h_0-%d' % i))
       self.c_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='c_0-%d' % i))
@@ -848,10 +1398,10 @@ class Encoder(Opt):
     #-----------------------------------------------------------------
     # Build the input/output variables
     self.x = T.imatrix('x')
-    xparams = []
+    self.xparams = []
     for i, lib in enumerate(self.libs):
-      xparams.append(lib.get_subtensor(self.x[:,i])*lib.hmask)
-    x = T.concatenate(xparams, axis=1)
+      self.xparams.append(lib.get_subtensor(self.x[:,i]))
+    x = T.concatenate([xparam*lib.hmask for xparam in self.xparams], axis=1)
     self.y = T.fvector('y')
 
     #-------------------------------------------------------------------
@@ -859,7 +1409,6 @@ class Encoder(Opt):
     self.params =\
         self.Wparams +\
         self.bparams +\
-        self.hparams +\
         self.h_0 +\
         (self.c_0 if self.model.endswith('LSTM') else [])
     self.gparams = [theano.shared(np.zeros_like(param.get_value()), name='g'+param.name) for param in self.params]
@@ -875,14 +1424,14 @@ class Encoder(Opt):
         h_tm1 = ch_tm1[len(ch_tm1)/2:]
         c_t   = []
         h_t   = [x[i:i+self.window].flatten()]
-        for h_tm1_l, Wparam, bparam, hparam, hmask in zip(h_tm1, self.Wparams, self.bparams, self.hparams, self.hmasks):
-          xparam = T.concatenate([h_t[-1], h_tm1_l])
+        for h_tm1_l, Wparam, bparam, hmask in zip(h_tm1, self.Wparams, self.bparams, self.hmasks):
+          x_t_l = T.concatenate([h_t[-1], h_tm1_l])
 
-          a = T.dot(Wparam, xparam) 
+          a = T.dot(Wparam, x_t_l) 
           a += bparam
 
-          c = func(a, hparam)
-          h = c*hmask
+          c = a
+          h = funx[self.hfunc](c)*hmask
 
           c_t.append(c)
           h_t.append(h)
@@ -898,16 +1447,16 @@ class Encoder(Opt):
         h_tm1 = ch_tm1[len(ch_tm1)/2:]
         c_t   = []
         h_t   = [x[i:i+self.window].flatten()]
-        for h_tm1_l, Wparam, bparam, hparam, hmask in zip(h_tm1, self.Wparams, self.bparams, self.hparams, self.hmasks):
+        for h_tm1_l, Wparam, bparam, hmask in zip(h_tm1, self.Wparams, self.bparams, self.hmasks):
           sliceLen = Wparam.shape[0]/3
-          xparam = T.concatenate([h_t[-1], h_tm1_l])
+          x_t_l = T.concatenate([h_t[-1], h_tm1_l])
 
-          zr = T.dot(Wparam[sliceLen:], xparam) + bparam[sliceLen:]
+          zr = T.dot(Wparam[sliceLen:], x_t_l) + bparam[sliceLen:]
           z  = sig(zr[:sliceLen])
           r  = sig(zr[sliceLen:])
-          a  = T.dot(Wparam[:sliceLen], T.concatenate([xparam[:h_t[-1].shape[0]], xparam[h_t[-1].shape[0]:]*r]))
+          a  = T.dot(Wparam[:sliceLen], T.concatenate([x_t_l[:h_t[-1].shape[0]], x_t_l[h_t[-1].shape[0]:]*r]))
 
-          c = z*func(a, hparam) + (np.float32(1)-z)*h_tm1_l
+          c = z*funx[self.hfunc](a) + (np.float32(1)-z)*h_tm1_l
           h = c*hmask
 
           c_t.append(c)
@@ -924,14 +1473,14 @@ class Encoder(Opt):
         h_tm1 = ch_tm1[len(ch_tm1)/2:]
         c_t   = []
         h_t   = [x[i:i+self.window].flatten()]
-        for h_tm1_l, Wparam, bparam, hparam, hmask in zip(h_tm1, self.Wparams, self.bparams, self.hparams, self.hmasks):
+        for h_tm1_l, Wparam, bparam, hmask in zip(h_tm1, self.Wparams, self.bparams, self.hmasks):
           sliceLen = Wparam.shape[0]/3
-          xparam = T.concatenate([h_t[-1], h_tm1_l])
+          x_t_l = T.concatenate([h_t[-1], h_tm1_l])
 
-          azr = T.dot(Wparam, xparam) + bparam
-          a   = func(azr[:sliceLen], hparam)
-          z   = sig(zr[sliceLen:2*sliceLen])
-          r   = sig(zr[2*sliceLen:])
+          azr = T.dot(Wparam, x_t_l) + bparam
+          a   = funx[self.hfunc](azr[:sliceLen])
+          z   = sig(azr[sliceLen:2*sliceLen])
+          r   = sig(azr[2*sliceLen:])
 
           c = z*a + (np.float32(1)-z)*r*h_tm1_l
           h = c*hmask
@@ -950,18 +1499,18 @@ class Encoder(Opt):
         h_tm1 = ch_tm1[len(ch_tm1)/2:]
         c_t   = []
         h_t   = [x[i:i+self.window].flatten()]
-        for h_tm1_l, c_tm1_l, Wparam, bparam, hparam, hmask in zip(h_tm1, c_tm1, self.Wparams, self.bparams, self.hparams, self.hmasks):
+        for h_tm1_l, c_tm1_l, Wparam, bparam, hmask in zip(h_tm1, c_tm1, self.Wparams, self.bparams, self.hmasks):
           sliceLen = Wparam.shape[0]/4
-          xparam = T.concatenate([h_t[-1], h_tm1_l])
+          x_t_l = T.concatenate([h_t[-1], h_tm1_l])
 
-          aifo = T.dot(Wparam, xparam) + bparam
-          a    = func(aifo[:sliceLen], hparam)
+          aifo = T.dot(Wparam, x_t_l) + bparam
+          a    = funx[self.hfunc](aifo[:sliceLen])
           i    = sig(aifo[sliceLen:2*sliceLen])
           f    = sig(aifo[2*sliceLen:3*sliceLen])
           o    = sig(aifo[3*sliceLen:])
 
           c = i*a + f*c_tm1_l
-          h = func(c*o, hparam)*hmask
+          h = funx[self.hfunc](c*o)*hmask
 
           c_t.append(c)
           h_t.append(h)
@@ -977,17 +1526,17 @@ class Encoder(Opt):
         h_tm1 = ch_tm1[len(ch_tm1)/2:]
         c_t   = []
         h_t   = [x[i:i+self.window].flatten()]
-        for h_tm1_l, c_tm1_l, Wparam, bparam, hparam, hmask in zip(h_tm1, c_tm1, self.Wparams, self.bparams, self.hparams, self.hmasks):
+        for h_tm1_l, c_tm1_l, Wparam, bparam, hmask in zip(h_tm1, c_tm1, self.Wparams, self.bparams, self.hmasks):
           sliceLen = Wparam.shape[0]/3
-          xparam = T.concatenate([h_t[-1], h_tm1_l])
+          x_t_l = T.concatenate([h_t[-1], h_tm1_l])
 
-          azo = T.dot(Wparam, xparam) + bparam
-          a   = func(azo[:sliceLen], hparam)
+          azo = T.dot(Wparam, x_t_l) + bparam
+          a   = funx[self.hfunc](azo[:sliceLen])
           z   = sig(azo[sliceLen:2*sliceLen])
           o   = sig(azo[2*sliceLen:])
 
           c = z*a + (np.float32(1)-z)*c_tm1_l
-          h = func(c*o, hparam)*hmask
+          h = funx[self.hfunc](c*o)*hmask
 
           c_t.append(c)
           h_t.append(h)
@@ -996,7 +1545,7 @@ class Encoder(Opt):
 
     states, _ = theano.scan(
         fn=recur,
-        sequences=T.arange(x.shape[0]-(self.window-1)),
+        sequences=T.arange(self.x.shape[0]-(self.window-1)),
         outputs_info = self.c_0 + self.h_0)
 
     self.c = states[:len(states)/2]
@@ -1011,11 +1560,11 @@ class Encoder(Opt):
     self.complexity = theano.shared(np.float32(0))
     if self.L1reg > 0:
       self.complexity += self.L1reg*T.sum([T.sum(T.abs_(Wparam)) for Wparam in self.Wparams])
-      self.complexity += self.L1reg*T.sum([T.sum(T.abs_(xparam)) for lib, xparam in zip(self.libs, xparams) if lib.mutable()])
+      self.complexity += self.L1reg*T.sum([T.sum(T.abs_(xparam)) for lib, xparam in zip(self.libs, self.xparams) if lib.mutable()])
  
     if self.L2reg > 0:
       self.complexity += self.L2reg*T.sum([T.sum(T.sqr(Wparam)) for Wparam in self.Wparams])
-      self.complexity += self.L2reg*T.sum([T.sum(T.sqr(xparam)) for lib, xparam in zip(self.libs, xparams) if lib.mutable()])
+      self.complexity += self.L2reg*T.sum([T.sum(T.sqr(xparam)) for lib, xparam in zip(self.libs, self.xparams) if lib.mutable()])
 
     self.cost = self.error + self.complexity
 
@@ -1054,7 +1603,6 @@ class Encoder(Opt):
     paramVars =\
         [T.fmatrix() for Wparam in self.Wparams] +\
         [T.fvector() for bparam in self.bparams] +\
-        [T.fvector() for hparam in self.hparams] +\
         [T.fvector() for h_0_l in self.h_0] +\
         ([T.fvector() for c_0_l in self.c_0] if self.model.endswith('LSTM') else [])
     self.update_grads = theano.function(
@@ -1104,7 +1652,6 @@ class Encoder(Opt):
       return self.libs[0].strs_to_idxs(strings)
     else:
       return np.concatenate([lib.strs_to_idxs([string[i] for string in strings]) for i, lib in enumerate(self.libs)], axis=1)
-
 
   #=====================================================================
   # Unpad a list of strings or string tuples
@@ -1228,7 +1775,7 @@ class Encoder(Opt):
 
   #=====================================================================
   # Calculate the cost of a minibatch using multiple cores
-  def batch_cost(self, dataset, workers=2):
+  def mp_batch_cost(self, dataset, workers=2):
     """"""
 
     cost = 0
@@ -1251,9 +1798,18 @@ class Encoder(Opt):
     return cost / len(dataset)
 
   #=====================================================================
+  # Calculate the cost of a minibatch
+  def batch_cost(self, dataset):
+    """"""
+
+    cost = 0
+    for datum in dataset:
+      cost += self.idxs_to_cost(*datum)
+    return cost / len(dataset)
+
+  #=====================================================================
   # Calculate the gradients of a minibatch using multiple cores
-  # TODO set up a separate process that saves stuff here, not down below
-  def train(self, dataset, grader, optimizer, batchSize=64, epochs=1, costEvery=None, testset=None, saveEvery=None, savePipe=None, workers=2):
+  def mp_train(self, dataset, grader, optimizer, batchSize=64, epochs=1, costEvery=None, testset=None, saveEvery=None, savePipe=None, workers=2):
     """"""
 
     #-------------------------------------------------------------------
@@ -1267,11 +1823,11 @@ class Encoder(Opt):
     minibatchd = str(int(np.log10(len(dataset)/batchSize))+1)
     s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (0,0)
     cost = []
-    cost.append(self.batch_cost(dataset, workers))
+    cost.append(self.mp_batch_cost(dataset, workers))
     s += ': %.3f train error' % cost[-1]
     if testset is not None:
       test = []
-      test.append(self.batch_cost(testset, workers))
+      test.append(self.mp_batch_cost(testset, workers))
       s += ', %.3f test error' % test[-1]
     wps = 0.0
     s += ', %.1f data per second' % wps
@@ -1328,7 +1884,7 @@ class Encoder(Opt):
           cost.append(np.sum(recentCost)/(batchSize*costEvery))
           recentCost = []
           if testset is not None:
-            test.append(self.batch_cost(testset, workers))
+            test.append(self.mp_batch_cost(testset, workers))
           thisCostTime = time.time()
         if saveEvery is not None and (mb+1) % saveEvery == 0:
           savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
@@ -1360,7 +1916,134 @@ class Encoder(Opt):
           cost.append(np.sum(recentCost)/(len(dataset) % (batchSize*costEvery)))
         recentCost = []
         if testset is not None:
-          test.append(self.batch_cost(testset, workers))
+          test.append(self.mp_batch_cost(testset, workers))
+        thisCostTime = time.time()
+      if saveEvery is not None and (mb+1) % saveEvery != 0:
+        savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+        lastSaveTime = time.time()
+      s = ''
+      s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (t+1,mb+1)
+      s += ': %.3f train error' % cost[-1]
+      if testset is not None:
+        s += ': %.3f test error' % test[-1]
+      if wps == 0:
+        wps = ((batchSize*(mb+1 % costEvery) if costEvery is not None else len(dataset)) / (thisCostTime-lastCostTime))
+      else:
+        wps = .67*wps + .33*((batchSize*((mb+1) % costEvery) if costEvery is not None else len(dataset)) / (thisCostTime-lastCostTime))
+      s += ', %.1f data per second' % wps 
+      if saveEvery is not None:
+        s += ', %.1f minutes since saving' % ((time.time()-lastSaveTime)/60)
+      s += '        \r'
+      print s,
+      sys.stdout.flush()
+      if costEvery is None or mb+1 % costEvery != 0:
+        lastCostTime = time.time()
+
+    #-------------------------------------------------------------------
+    # Wrap everything up
+    if savePipe is not None:
+      savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+      savePipe.send('STOP')
+    print ''
+    return cost
+  
+  #=====================================================================
+  # Calculate the gradients of a minibatch using multiple cores
+  def train(self, dataset, grader, optimizer, batchSize=64, epochs=1, costEvery=None, testset=None, saveEvery=None, savePipe=None):
+    """"""
+
+    #-------------------------------------------------------------------
+    # Count the number of mutable libraries
+    nmutables = sum([lib.mutable() for lib in self.libs])
+    
+    #-------------------------------------------------------------------
+    # Saving and printing
+    s = ''
+    epochd = str(int(np.log10(epochs))+1)
+    minibatchd = str(int(np.log10(len(dataset)/batchSize))+1)
+    s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (0,0)
+    cost = []
+    cost.append(self.batch_cost(dataset))
+    s += ': %.3f train error' % cost[-1]
+    if testset is not None:
+      test = []
+      test.append(self.batch_cost(testset))
+      s += ', %.3f test error' % test[-1]
+    wps = 0.0
+    s += ', %.1f data per second' % wps
+    if saveEvery is not None:
+      savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+      lastSaveTime = time.time()
+      s += ', %.1f minutes since saving' % ((time.time()-lastSaveTime)/60)
+    s += '        \r'
+    print s,
+    sys.stdout.flush()
+    lastCostTime = time.time()
+
+    #-------------------------------------------------------------------
+    # Multiprocessing the minibatch
+    recentCost = []
+    for t in xrange(epochs):
+      np.random.shuffle(dataset)
+      for mb in xrange(len(dataset)/batchSize):
+        for datum in dataset[mb*batchSize:(mb+1)*batchSize]:
+          sidxs = []
+          for i, lib in enumerate(self.libs):
+            if lib.mutable():
+              sidxs.append(datum[0][:,i])
+          grad_info = grader(*(datum+tuple(sidxs)))
+          recentCost.append(grad_info[nmutables])
+          self.update_grads(batchSize, *grad_info[nmutables+1:nmutables+1+len(self.params)])
+          if nmutables > 0:
+            i = 0
+            for lib in self.libs:
+              if lib.mutable():
+                lib.update_grads(batchSize, grad_info[nmutables+1+len(self.params)+i], sidxs[i])
+                i += 1
+        optimizer(*[lib.gidxs() for lib in self.libs])
+        self.reset_grad()
+        for lib in self.libs:
+          lib.reset_lib_grads()
+
+        #---------------------------------------------------------------
+        # More printing and saving
+        if costEvery is not None  and (mb+1) % costEvery == 0:
+          cost.append(np.sum(recentCost)/(batchSize*costEvery))
+          recentCost = []
+          if testset is not None:
+            test.append(self.batch_cost(testset))
+          thisCostTime = time.time()
+        if saveEvery is not None and (mb+1) % saveEvery == 0:
+          savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
+          lastSaveTime = time.time()
+        if costEvery is not None and (mb+1) % costEvery == 0:
+          s = ''
+          s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (t+1,mb+1)
+          s += ': %.3f train error' % cost[-1]
+          if testset is not None:
+            s += ': %.3f test error' % (test[-1])
+          if wps == 0:
+            wps = ((batchSize*costEvery) / (thisCostTime-lastCostTime))
+          else:
+            wps = .67*wps + .33*((batchSize*costEvery) / (thisCostTime-lastCostTime))
+          s += ', %.1f data per second' % wps
+          if saveEvery is not None:
+            s += ', %.1f minutes since saving' % ((time.time()-lastSaveTime)/60)
+          s += '        \r'
+          print s,
+          sys.stdout.flush()
+          lastCostTime = time.time()
+
+      #-----------------------------------------------------------------
+      # If we haven't been printing, print now
+      if costEvery is None or (mb+1) % costEvery != 0:
+        if costEvery is None:
+          cost.append(np.sum(recentCost)/len(dataset))
+        else:
+          cost.append(np.sum(recentCost)/(len(dataset) % (batchSize*costEvery)))
+        recentCost = []
+        if testset is not None:
+          test.append(self.batch_cost(testset))
         thisCostTime = time.time()
       if saveEvery is not None and (mb+1) % saveEvery != 0:
         savePipe.send((self, cost) + ((test,) if testset is not None else tuple()))
@@ -1392,7 +2075,7 @@ class Encoder(Opt):
     return cost
 
 #***********************************************************************
-# A multilayer basic recurrent neural decoder 
+# A multilayer recurrent neural decoder 
 class Decoder(Opt):
   """"""
   
@@ -1454,14 +2137,15 @@ class Decoder(Opt):
     self.c_0     = []
     
     for i in xrange(1, len(dims)):
-      W = matwizard(dims[i], dims[i-1], shape = 'rect')
+      W = matwizard(dims[i], dims[i-1], shape='rect')
       U = matwizard(dims[i], dims[i], shape='diag')
       if gates > 1:
         W = np.concatenate([W, matwizard(dims[i]*(gates-1), dims[i-1], sigmoid_output=True)], axis=0)
         U = np.concatenate([U, matwizard(dims[i]*(gates-1), dims[i], sigmoid_output=True)], axis=0)
       self.Wparams.append(theano.shared(np.concatenate([W, U], axis=1), name='W-%d' % i))
       self.bparams.append(theano.shared(np.zeros(dims[i]*gates, dtype='float32'), name='b-%d' % i))
-      self.hparams.append(theano.shared(matwizard(dims[i], sigmoid_output=True), name='h-%d' % i))
+      #self.hparams.append(theano.shared(matwizard(dims[i], sigmoid_output=True), name='h-%d' % i))
+      self.hparams.append(theano.shared(np.ones(dims[i], dtype='float32'), name='h-%d' % i))
       self.hmasks.append(theano.shared(np.ones(dims[i], dtype='float32'), name='hmask-%d' % i))
       self.h_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='h_0-%d' % i))
       self.c_0.append(theano.shared(np.zeros(dims[i], dtype='float32'), name='c_0-%d' % i))
@@ -1503,8 +2187,8 @@ class Decoder(Opt):
           a = T.dot(Wparam, xparam)
           a += bparam
           
-          c = func(a, hparam)
-          h = c*hmask
+          c = a
+          h = func(c, hparam)*hmask
           
           c_t.append(c)
           h_t.append(h)
@@ -1618,7 +2302,7 @@ class Decoder(Opt):
       
     states, _ = theano.scan(
         fn=recur,
-        sequences=T.arange(x.shape[0]-(self.window-1)),
+        n_steps=self.y.shape[0],
         outputs_info = self.c_0 + self.h_0)
 
     self.c = states[:len(states)/2]
@@ -1643,10 +2327,10 @@ class Decoder(Opt):
     
     #===================================================================
     # Activate
-    self.vec_to_vecs = theano.function(
-        inputs=[self.x],
-        outputs=yhat,
-        allow_input_downcast=False)
+    #self.vec_to_vecs = theano.function(
+    #    inputs=[self.x],
+    #    outputs=yhat,
+    #    allow_input_downcast=False)
     
     #===================================================================
     # Error
@@ -1657,14 +2341,14 @@ class Decoder(Opt):
     
     #===================================================================
     # Complexity
-    self.vec_to_comp = theano.function(
-        inputs=[self.x],
-        outputs=self.complexity,
-        allow_input_downcast=False)
+    #self.vec_to_comp = theano.function(
+    #    inputs=[self.x],
+    #    outputs=self.complexity,
+    #    allow_input_downcast=False)
     
     #===================================================================
     # Cost
-    self.idxs_to_cost = theano.function(
+    self.vec_to_cost = theano.function(
         inputs=[self.x, self.y],
         outputs=self.cost,
         allow_input_downcast=False)
@@ -1708,7 +2392,7 @@ class Decoder(Opt):
     nbegins = 0
     while tuple(strings[nbegins]) == begins:
       nbegins += 1
-    strings = [begins]*(self.window-nbegins) + strings
+    strings = [begins] + strings
 
     # Pad the end
     if tuple(strings[0]) != ends:
@@ -1738,7 +2422,7 @@ class Decoder(Opt):
     if np.equal(indices[-1], ends):
       nends += 1
     a = np.empty(len(indices)+nbegins+end)
-    a[0:(self.window-nbegins)] = begins
+    a[0:1] = begins
     a[-1-(1-nends):-1] = ends
     
     return a
@@ -1765,7 +2449,7 @@ class Decoder(Opt):
     if np.equal(vectors[-1], ends):
       nends += 1
     a = np.empty(len(vectors)+nbegins+end)
-    a[0:(self.window-nbegins)] = begins
+    a[0:1] = begins
     a[-1-(1-nends):-1] = ends
     
     return a
@@ -1926,10 +2610,6 @@ class Decoder(Opt):
     """"""
     
     #-------------------------------------------------------------------
-    # Don't change any of the libraries
-    nmutables = 0
-    
-    #-------------------------------------------------------------------
     # Saving and printing
     s = ''
     epochd = str(int(np.log10(epochs))+1)
@@ -1963,33 +2643,21 @@ class Decoder(Opt):
       for mb in xrange(len(dataset)/batchSize):
         processes = []
         for datum in dataset[mb*batchSize:(mb+1)*batchSize]:
-          sidxs = []
-          for i, lib in enumerate(self.libs):
-            if lib.mutable():
-              sidxs.append(datum[0][:,i])
-          dataQueue.put(datum+tuple(sidxs))
+          dataQueue.put(datum)
         for worker in xrange(workers):
           dataQueue.put('STOP')
         for worker in xrange(workers):
-          process = mp.Process(target=grad_worker, args=(grader, dataQueue, gradQueue, nmutables))
+          process = mp.Process(target=grad_worker, args=(grader, dataQueue, gradQueue))
           process.start()
           processes.append(process)
         for worker in xrange(workers):
           for grads in iter(gradQueue.get, 'STOP'):
             recentCost.append(grads['cost'])
             self.update_grads(batchSize, *grads['grads'])
-            if nmutables > 0:
-              i = 0
-              for lib in self.libs:
-                if lib.mutable():
-                  lib.update_lib_grads(batchSize, grads['sgrads'][i])
-                  i += 1
         for process in processes:
           process.join()
-        optimizer(*[lib.gidxs() for lib in self.libs])
+        optimizer()
         self.reset_grad()
-        for lib in self.libs:
-          lib.reset_lib_grads()
 
         #---------------------------------------------------------------
         # More printing and saving
@@ -2007,7 +2675,7 @@ class Decoder(Opt):
           s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (t+1,mb+1)
           s += ': %.3f train error' % cost[-1]
           if testset is not None:
-            s += ': %.3f test error' % (test[-1])
+            s += ': %.3f test error' % test[-1]
           if wps == 0:
             wps = ((batchSize*costEvery) / (thisCostTime-lastCostTime))
           else:
@@ -2049,7 +2717,7 @@ class Decoder(Opt):
       s += '        \r'
       print s,
       sys.stdout.flush()
-      if costEvery is None or mb+1 % costEvery != 0:
+      if costEvery is None or (mb+1) % costEvery != 0:
         lastCostTime = time.time()
 
     #-------------------------------------------------------------------
@@ -2060,7 +2728,6 @@ class Decoder(Opt):
     print ''
     return cost
   
-#TODO try adding a class method that takes care of the multiprocessing part, make the main function the one that trains the model and the subprocess the one that saves it
 #***********************************************************************
 # Test the program
 if __name__ == '__main__':
@@ -2069,34 +2736,77 @@ if __name__ == '__main__':
   import os.path
   WORKERS = 1
   EPOCHS = 10
-  PATH = '.'
+  ETA_0 = .1
+  PATH = 'Tests'
+  HFUNC = 'softplus'
   
   glove = pkl.load(open('glove.6B.10k.50d-real.pkl'))
+  #=====================================================================
+  # Test the Classifier
+  dataset = []
+  mat = np.concatenate([glove[0], np.random.randn(3,50)])
+  mat = (mat-np.mean(mat))/np.std(mat)
+  glove[1]['<S>'] = len(glove[1])
+  glove[1]['</S>'] = len(glove[1])
+  glove[1]['<UNK>'] = len(glove[1])
+  lib = Library(keys=glove[1], mat=mat)
+  classifier = Classifier([lib], [50, 50], sharelib=False, hfunc=HFUNC)
+  for i in xrange(5):
+    dataset.extend(list(enumerate(mat+np.random.normal(0,.1,size=mat.shape))))
+  for i, datum in enumerate(dataset):
+    dataset[i] = (datum[1], [datum[0]])
+  np.random.shuffle(dataset)
+  train_data = dataset[:int(.8*len(dataset))]
+  dev_data = dataset[int(.8*len(dataset)):int(.9*len(dataset))]
+  test_data = dataset[int(.9*len(dataset)):]
+  train_data = classifier.convert_dataset(train_data)
+  dev_data = classifier.convert_dataset(dev_data)
+  test_data = classifier.convert_dataset(test_data)
+  grads, opt = classifier.RMSProp(eta_0=ETA_0)
+  
+  parentPipe, childPipe = mp.Pipe()
+  process = mp.Process(target=pkl_worker, args=(childPipe,), kwargs={'path':PATH, 'name': 'cls-%s-'%HFUNC})
+  process.start()
+  classifier.train(train_data, grads, opt, savePipe=parentPipe, costEvery=10, epochs=EPOCHS, testset=dev_data)
+  process.join()
+  
+  glove = pkl.load(open('glove.6B.10k.50d-real.pkl'))
+  #=====================================================================
+  # Test the Encoder
   dataset = zip([list(x) for x in sorted(glove[1], key=glove[1].get)], glove[0])
   vocab = set()
   for datum in dataset:
     vocab.update(datum[0])
   lib = Library(keys=vocab, mat=50)
-  encoder = Encoder([lib], [200,50], model='RNN')
+  encoder = Encoder([lib], [50,200,50], model='RNN')
   encoder.convert_dataset(dataset)
   train_data = dataset[:int(.8*len(dataset))]
   dev_data = dataset[int(.8*len(dataset)):int(.9*len(dataset))]
   test_data = dataset[int(.9*len(dataset)):]
-  grads, opt = encoder.SGD()
+  grads, opt = encoder.Adam()
   
   parentPipe, childPipe = mp.Pipe()
-  process = mp.Process(target=encoder.train, args=(train_data, grads, opt), kwargs={'savePipe': childPipe, 'costEvery': 10, 'workers': WORKERS, 'epochs': EPOCHS, 'testset': dev_data})
+  process = mp.Process(target=pkl_worker, args=(childPipe,), kwargs={'name': 'enc-'})
   process.start()
-  i = 0
-  msg = 'START'
-  while msg != 'STOP':
-    msg = parentPipe.recv() #Always pickles at the end
-    if msg not in ('START', 'STOP'):
-      i+=1
-      pkl.dump(msg[1:], open(os.path.join(PATH, 'cost-%02d.pkl' % i), 'w'))
-      pkl.dump(msg[0], open(os.path.join(PATH, 'state-%02d.pkl' % i), 'w'), protocol=pkl.HIGHEST_PROTOCOL)
- 
+  encoder.train(train_data, grads, opt, savePipe=parentPipe, costEvery=10, epochs=EPOCHS, testset=dev_data)
   process.join()
-
+  
+  #=====================================================================
+  # Test the Decoder
+  #dataset = zip(glove[0], [list(x) for x in sorted(glove[1], key=glove[1].get)])
+  #vocab = set()
+  #decoder = Decoder([lib], [100,200,50], model='RNN')
+  #decoder.convert_dataset(dataset)
+  #train_data = dataset[:int(.8*len(dataset))]
+  #dev_data = dataset[int(.8*len(dataset)):int(.9*len(dataset))]
+  #test_data = dataset[int(.9*len(dataset)):]
+  #grads, opt = decoder.SGD()
+  #
+  #parentPipe, childPipe = mp.Pipe()
+  #process = mp.Process(target=pkl_worker, args=(childPipe,), kwargs={'name': 'dec-'})
+  #process.start()
+  #decoder.train(train_data, grads, opt, savePipe=parentPipe, costEvery=10, workers=WORKERS, epochs=EPOCHS, testset=dev_data)
+  #process.join()
+  #for hparam in decoder.hparams:
+  #  print hparam.get_value()
   print 'Works!'
-

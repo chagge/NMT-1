@@ -1,6 +1,22 @@
  #!/usr/bin/env python
 import numpy as np
+import scipy.special as ss
+from scipy import integrate
 import sys
+
+#=======================================================================
+# The gaussian probability density function
+def gauss(x, s):
+  """"""
+  
+  return 1./np.sqrt(2*np.pi*s**2) * np.exp(-x**2/(2*s**2))
+
+#=======================================================================
+# Integral computation of the scaling factor of a soft function
+def integral(func):
+  """"""
+  
+  return np.sqrt(integrate.quad(lambda x: func(x)**2*gauss(x, np.arctanh(np.sqrt(1./3))), -100,100)[0])
 
 #=======================================================================
 # Creates the diagonal of a rectangular matrix
@@ -73,19 +89,20 @@ def matwizard(*dims, **kwargs):
   else:
     spar = 1.
   
-  if 'sigmoid_output' in kwargs:
-    sigmoid_output = kwargs['sigmoid_output']
+  if 'recur' in kwargs:
+    recur = True
   else:
-    sigmoid_output = False
-  if 'relu_input' in kwargs:
-    relu_input = kwargs['relu_input']
+    recur = False
+  
+  if 'imput' in kwargs:
+    imput = kwargs['imput']
   else:
-    relu_input = False
+    imput = ''
 
-  if 'relu_output' in kwargs:
-    relu_output = kwargs['relu_output']
+  if 'output' in kwargs:
+    output = kwargs['output']
   else:
-    relu_output = False
+    output = ''
 
   #---------------------------------------------------------------------
   # Error checking/warnings
@@ -108,7 +125,7 @@ def matwizard(*dims, **kwargs):
       mask = np.random.binomial(1, spar, dims)
       mat *= mask
     elif spar > 1:
-      mask = np.array([np.random.permutation(dims[1]) for i in xrange(dims[0])]).less(spar)
+      mask = np.less(np.array([np.random.permutation(dims[1]) for i in xrange(dims[0])]), spar)
       mat *= mask
   #- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   # Upper triangular matrix
@@ -130,22 +147,65 @@ def matwizard(*dims, **kwargs):
     mat /= np.sqrt(np.sum(np.not_equal(mat, 0), axis=1, keepdims=True))
 
   #---------------------------------------------------------------------
-  # Generate random values
-  if relu_output:
-    mat *= 1./np.sqrt(1-2/np.pi)
-  elif sigmoid_output:
+  # Set the standard deviation
+  if output in ('softsign', 'tanh'):
     mat *= np.arctanh(np.sqrt(1./3))
-  else:
-    mat *= np.arctanh(np.sqrt(1./3))/.75
+    if imput == output:
+      mat /= integral(lambda x: np.tanh(x))
+  elif output in ('softstep', 'sig', 'sigmoid'):
+    mat *= np.arctanh(np.sqrt(1./3))
+    if imput == output:
+      mat /= integral(lambda x: (np.tanh(x)+1)/2)
+  elif output in ('softabs',):
+    mat *= np.arctanh(np.sqrt(1./3))
+    if imput == output:
+      mat /= integral(lambda x: np.log(2*np.cosh(x)))
+  elif output in ('softpo', 'softplus'):
+    mat *= np.arctanh(np.sqrt(1./3))
+    if imput == output:
+      mat /= integral(lambda x: (np.log(2*np.cosh(x))+x)/2)
+  elif output in ('softbool', 'tub'):
+    mat *= np.arctanh(np.sqrt(1./3))
+    if imput == output:
+      mat /= integral(lambda x: np.tanh(x)**2)
+  elif output in ('softpos',):
+    mat *= np.arctanh(np.sqrt(1./3))
+    if imput == output:
+      mat /= integral(lambda x: ((np.tanh(x)+1)/2)**2)
+      
+  elif output in ('sharpsign', 'hardtanh'):
+    if imput == output:
+      mat *= 1/ss.erf(2/np.sqrt(2))
+    else: mat *= .5
+  elif output in ('sharpstep',):
+    if imput == output:
+      mat *= .875/ss.erf(2/np.sqrt(2))
+    else: mat *= .5
+  elif output in ('sharpabs', 'abs'):
+    if imput == output:
+      mat *= 1.
+    else: mat *= .5
+  elif output in ('sharppo', 'relu'):
+    if imput == output:
+      mat *= np.sqrt(2)
+    else: mat *= .5
+  elif output in ('sharpbool',):
+    if imput == output:
+      mat *= 1/ss.erf(2/np.sqrt(2))
+    else: mat *= .5
+  elif output in ('sharppos',):
+    if imput == output:
+      mat *= 1/ss.erf(2/np.sqrt(2))
+    else: mat *=.5
+    
+  elif output in ('softmax',):
+    mat *= 0
 
-  #---------------------------------------------------------------------
-  # Account for the size of the input vector
-  if relu_input:
-    mat *= np.sqrt(2.)
-
+  if recur:
+    mat /= np.sqrt(2)
   #---------------------------------------------------------------------
   # Return the matrix
-  return mat.astype(np.float32)
+  return mat.astype('float32')
 
 #***********************************************************************
 # Test it out
@@ -154,87 +214,27 @@ if __name__ == '__main__':
 
   import matplotlib.pyplot as plt
   def relu(x): return np.maximum(x, 0)
-  def gauss(x, m, s): return 1./(s*np.sqrt(2*np.pi))*np.exp(-(x-m)**2/(2*s**2))
-  print matwizard(4,5)
-  print matwizard(4,5, shape='diag')
-  print matwizard(4,5, shape='tridiag')
-  print matwizard(4,5, shape='triang')
-  print matwizard(4,5, relu_input=True)
-  print matwizard(4,5, relu_output=True)
+  #print matwizard(4,5)
+  #print matwizard(4,5, shape='diag')
+  #print matwizard(4,5, shape='tridiag')
+  #print matwizard(4,5, shape='triang')
 
-  vlen = 3000.
-  Wlen = 3000.
+  vlen = 2000.
+  Wlen = 5000.
+  print np.std(np.random.randn(vlen) + np.random.randn(vlen))
 
-  print 'Testing rect:'
-  W = matwizard(Wlen, vlen)
-  r = np.random.randn(vlen)
-  dot1 = W.dot(r)
-  print np.mean(dot1), np.std(dot1)
-  print np.std(2*np.tanh(dot1))
-  
-  print 'Testing diag:'
-  W = matwizard(Wlen, vlen, shape='diag')
-  r = np.random.randn(vlen)
-  dot2 = W.dot(r)
-  print np.mean(dot2), np.std(dot2)
-  print np.std(2*np.tanh(dot2))
-
-  print 'Testing tridiag:'
-  W = matwizard(Wlen, vlen, shape='tridiag')
-  r = np.random.randn(vlen)
-  dot3 = W.dot(r)
-  print np.mean(dot3), np.std(dot3)
-  print np.std(2*np.tanh(dot3))
-
-  print 'Testing triang:'
-  W = matwizard(Wlen, vlen, shape='triang')
-  r = np.random.randn(vlen)
-  dot4 = W.dot(r)
-  print np.mean(dot4), np.std(dot4)
-  print np.std(2*np.tanh(dot4))
-
-  plt.figure()
-  plt.hist(dot1, 50, normed=1, alpha=1, label='rect')
-  plt.hist(dot4, 50, normed=1, alpha=.75, label='triang')
-  plt.hist(dot3, 50, normed=1, alpha=.5, label='tridiag')
-  plt.hist(dot2, 50, normed=1, alpha=.25, label='diag')
-  x = np.arange(-3,3,.01)
-  plt.plot(x, gauss(x,0,np.arctanh(np.sqrt(1./3))), color='k', lw=1.5, ls='--')
-  plt.legend()
-  plt.grid()
-  plt.show()
-  #---------------------------------------------------------------------
-  print 'Testing relu:'
-  W = matwizard(Wlen, vlen)
-  r = np.random.randn(vlen)
-  dot5 = W.dot(r)
-  print np.mean(dot5), np.std(dot5)
-  func5 = relu(dot5)/(np.arctanh(np.sqrt(1./3))*np.sqrt(1-2/np.pi))
-  print np.std(func5)
-
-  print 'Testing relu_input:'
-  W = matwizard(Wlen, vlen, relu_input=True)
-  r = relu(np.random.randn(vlen))
-  dot6 = W.dot(r)
-  print np.mean(dot6), np.std(dot6)
-  func6 = 2*np.tanh(dot6)
-  print np.std(func6)
-
-  print 'Testing relu_output:'
-  W = matwizard(Wlen, vlen, relu_output=True)
-  r = np.random.randn(vlen)
-  dot7 = W.dot(r)
-  print np.mean(dot7), np.std(dot7)
-  func7 = relu(dot7)
-  print np.std(func7)
-
-  plt.figure()
-  plt.hist(dot5, 50, normed=1, alpha=1, label='relu')
-  plt.hist(dot6, 50, normed=1, alpha=.67, label='relu_input')
-  plt.hist(dot7, 50, normed=1, alpha=.33, label='relu_output')
-  x = np.arange(-6,6,.01)
-  plt.plot(x, gauss(x,0,np.arctanh(np.sqrt(1./3))), color='k', lw=1.5, ls='--')
-  plt.plot(x, gauss(x,0,1/(np.arctanh(np.sqrt(1./3)))), color='k', ls='--')
-  plt.legend()
-  plt.grid()
-  plt.show()
+  h = np.zeros(Wlen)
+  W = matwizard(Wlen, vlen, output='tanh', recur=True)
+  U = matwizard(Wlen, Wlen, output='tanh', imput='tanh', recur=True)
+  for t in xrange(10):
+    v = np.random.randn(vlen)
+    w = np.dot(W, v)
+    u = np.dot(U, h)
+    a = w + u
+    h = np.tanh(a)
+    print '==='
+    print np.std(w), np.std(u), np.std(a)
+    print np.std(np.tanh(w)), np.std(np.tanh(u)), np.std(h)
+    print '---'
+    print np.mean(w), np.mean(u), np.mean(a)
+    print np.mean(np.tanh(w)), np.mean(np.tanh(u)), np.mean(h)
