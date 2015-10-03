@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import numpy as np
-from scipy.optimize import fsolve
 from matwizard import matwizard
 import theano
 import theano.tensor as T
@@ -41,6 +40,7 @@ def pkl_worker(childPipe, path='.', name=''):
 
 #***********************************************************************
 # Anything that can be optimized
+# TODO put the cost/training functions here
 class Opt():
   """"""
   
@@ -439,13 +439,13 @@ class Opt():
     s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') %(0,0)
     cost = []
     cost.append(self.batch_cost(dataset))
-    s += ': %.3f train cost' % cost[-1]
+    s += ': %.3f train error' % cost[-1]
     test = None
     nsaves = 1
     if testset is not None:
       test = []
       test.append(self.batch_cost(testset))
-      s += ', %.3f test cost' % test[-1]
+      s += ', %.3f test error' % test[-1]
     wps = 0.0
     s += ', %.1f data per second' % wps
     if saveEvery is not None:
@@ -483,9 +483,9 @@ class Opt():
         if costEvery is not None and (mb+1) % costEvery == 0:
           s = ''
           s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (t+1, mb+1)
-          s += ': %.3f train cost' % cost[-1]
+          s += ': %.3f train error' % cost[-1]
           if testset is not None:
-            s += ': %.3f test cost' % test[-1]
+            s += ': %.3f test error' % test[-1]
           if wps == 0:
             wps = ((batchSize * costEvery) / (thisCostTime-lastCostTime))
           else:
@@ -512,16 +512,16 @@ class Opt():
         lastSaveTime = time.time()
       s = ''
       s += ('Minibatch %0'+epochd+'d-%0'+minibatchd+'d') % (t+1,mb+1)
-      s += ': %.3f train cost' % cost[-1]
+      s += ': %.3f train error' % cost[-1]
       if testset is not None:
-        s += ': %.3f test cost' % test[-1]
+        s += ': %.3f test error' % test[-1]
       if wps == 0:
         wps = .67*wps + .33*((batchSize*((mb+1) % costEvery) if costEvery is not None else len(dataset[0])) / (thisCostTime-lastCostTime))
       s += ', %.1f data per second' % wps
       if saveEvery is not None:
         s += ', %.1f minutes since saving' % ((time.time() - lastSaveTime)/60)
       s += '        \r'
-      print s,
+      print s
       sys.stdout.flush()
       if costEvery is None or (mb+1) % costEvery != 0:
         lastCostTime = time.time()
@@ -539,30 +539,26 @@ class Opt():
   
   #=====================================================================
   # Pickle the model
-  def save(self, basename, cost, test=None):
+  def save(self, filename, cost, test=None):
     """"""
     
-    self.dump(open(basename+'-state.pkl', 'w'))
-    with open(basename+'-cost.pkl', 'w') as f:
+    with open(filename+'-state.pkl', 'w') as f:
+      pkl.dump(self.__dict__, f, protocol=pkl.HIGHEST_PROTOCOL)
+    with open(filename+'-cost.pkl', 'w') as f:
       pkl.dump((cost,) + ((test,) if test is not None else tuple()), f, protocol=pkl.HIGHEST_PROTOCOL)
-    
-  #=====================================================================
-  # Dump the model
-  def dump(self, f):
-    """"""
-    
-    pkl.dump(self, f, protocol=pkl.HIGHEST_PROTOCOL)
     
   #=====================================================================
   # Load the model
   @classmethod
-  def load(cls, f):
+  def load(cls, filename):
     """"""
     
-    return pkl.load(f)
+    with open(filename+'state.pkl') as f:
+      return pkl.load(f)
   
 #***********************************************************************
 # A library
+# TODO build in GloVe capabilities
 class Library():
   """"""
   
@@ -812,7 +808,7 @@ class GloVe(Opt):
     if 'hfunc' in kwargs:
       self.hfunc = kwargs['hfunc']
     else:
-      self.hfunc = ''
+      self.hfunc = 'soft'
     
     if 'window' in kwargs:
       self.window = np.int32(kwargs['window'])
@@ -839,6 +835,11 @@ class GloVe(Opt):
     else:
       self.xmin = np.float32(5)
     
+    if 'alpha' in kwargs:
+      self.alpha = np.float32(kwargs['alpha'])
+    else:
+      self.alpha = np.float32(.75)
+    
     # V contains the individual counts, C contains the context counts
     self.V = Counter()
     self.C = defaultdict(Counter)
@@ -855,8 +856,6 @@ class GloVe(Opt):
   def build_vars(self):
     """"""
     
-    #------------------------------------------------------------------
-    # Aggregate the corpus statistics
     self._keys = set(filter(lambda k: self.V[k] >= self.xmin, self.V.keys()) + [self._unk])
     self.strs = {}
     self.idxs = {}
@@ -876,16 +875,15 @@ class GloVe(Opt):
           idx2 = self.idxs[self._unk]
         self.X[idx1][idx2] += 1
     
-    #------------------------------------------------------------------
-    # Build model params
     self.sparams  = []
     self.xparams  = []
     self.gsparams = []
     self.hmasks   = []
     
-    self.L = theano.shared(np.random.normal(0,.5,(len(self._keys), self.wsize())).astype('float32'), name='L')
-    self.L_tilde = theano.shared(np.zeros((len(self._keys), self.wsize())).astype('float32'), name='L_tilde')
-    self.hmasks.append(theano.shared(np.ones(self._wsize, dtype='float32'), name='hmask'))
+    self.L = theano.shared(np.random.randn(len(self._keys), self.wsize()).astype('float32'), name='L')
+    self.L_tilde = theano.shared(np.random.randn(len(self._keys), self.wsize()).astype('float32'), name='L_tilde')
+    self.hmasks.append(theano.shared(np.ones(self._wsize, dtype='float32'), name='hmask-L'))
+    self.hmasks.append(theano.shared(np.ones(self._wsize, dtype='float32'), name='hmask-L_tilde'))
     self.Lb = theano.shared(np.zeros(len(self._keys), dtype='float32'), name='Lb')
     self.Lb_tilde = theano.shared(np.zeros(len(self._keys), dtype='float32'), name='Lb_tilde')
     self.params   = [self.L_tilde, self.Lb_tilde]
@@ -893,26 +891,18 @@ class GloVe(Opt):
     self.sparams  = [self.L, self.Lb]
     self.gsparams = list([theano.shared(np.zeros_like(sparam.get_value()), name='g'+sparam.name) for sparam in self.sparams])
     
-    #------------------------------------------------------------------
-    # Build the weighting function
-    def equations(pair):
-      xi, alpha = pair
-      return (np.power(xi, alpha)-np.tanh(xi/alpha), alpha*np.power(xi, alpha-1) - 1/alpha*(1-np.tanh(xi/alpha)**2))
-    xi, alpha = fsolve(equations, (.533, .693))
+    if self.hfunc == 'soft':
+      func = lambda y: T.tanh(y/(self.alpha*self.xmax))
+    elif self.hfunc == 'sharp':
+      func = lambda y: T.switch(T.power(y/self.xmax, self.alpha) > 1, np.float32(1), T.power(y/self.xmax, self.alpha))
     
-    func = lambda y: T.switch(y > xi*self.xmax, T.tanh(y/(np.float32(alpha)*self.xmax)), T.power(y/self.xmax, np.float32(alpha)))
-    
-    #------------------------------------------------------------------
-    # Build the input/output variables
     self.x = T.imatrix('x')
     self.xparams = [self.L[self.x[:,0]], self.Lb[self.x[:,1]]]
     x = (self.xparams[0]*self.hmasks[0]).T
     xb = self.xparams[1]
     self.y = T.fmatrix('y')
     
-    #------------------------------------------------------------------
-    # Build the cost variables
-    yhat = T.dot(self.L_tilde*self.hmasks[0], x) + xb + self.Lb_tilde[:,None]
+    yhat = T.dot(self.L_tilde*self.hmasks[1], x) + xb + self.Lb_tilde[:,None]
     logx = T.log(self.y)
     y    = T.switch(T.isinf(logx), np.float32(0), logx)
     f    = func(self.y)
@@ -1030,7 +1020,7 @@ class GloVe(Opt):
         y[idx2][i] = count
     x = dataset[0][(mb+1)*max_width:, None]
     cost += self.idxs_to_cost(np.concatenate([x,x], axis=1), y)
-    return cost
+    return cost / len(dataset[0])
   
   #=====================================================================
   # Train the model
@@ -1898,15 +1888,19 @@ if __name__ == '__main__':
   """"""
   
   import os.path
-  EPOCHS=300
+  EPOCHS=200
   PATH='Glove Compartment'
-  DIM=200
-  glove = GloVe(DIM, xmin=3, xmax=100, window=8)
+  HFUNC='tanh'
+  DIM=300
+  glove = GloVe(DIM, xmin=3, xmax=100, window=8, L2reg=1e-5, hfunc='sharp')
   glove.add_corpus('LotR.txt')
-  mom, grad, opt, nihil = glove.Adam(eta_0=.01)
-  name=os.path.join(PATH, 'glv-%d-'%DIM)
+  #mom, grad, opt, nihil = glove.SGD(eta_0=.1, anneal=.5, T_eta=1000, dropout=9./10)
+  mom, grad, opt, nihil = glove.RMSProp(eta_0=.01, dropout=9./10)
+  #mom, grad, opt, nihil = glove.AdaDelta(eta_0=1, dropout=9./10)
+  #mom, grad, opt, nihil = glove.Adam(eta_0=.01, dropout=9./10)
+  name=os.path.join(PATH, 'glv-SGD-%d-'%DIM)
   glove.train([np.arange(len(glove.X)).astype('int32')], mom, grad, opt, nihil, saveName=name, costEvery=10, epochs=EPOCHS, batchSize=32)
-  print glove.batch_cost([np.arange(len(glove.X)).astype('int32')])
+  print len(glove._keys)
   #glove = pkl.load(open('glove.6B.10k.50d-real.pkl'))
   #glove[1]['<S>'] = len(glove[1])
   #glove[1]['</S>'] = len(glove[1])
