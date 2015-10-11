@@ -90,9 +90,9 @@ def matwizard(*dims, **kwargs):
     spar = 1.
   
   if 'recur' in kwargs:
-    recur = True
+    recur = kwargs['recur']
   else:
-    recur = False
+    recur = 1.
   
   if 'imput' in kwargs:
     imput = kwargs['imput']
@@ -201,8 +201,8 @@ def matwizard(*dims, **kwargs):
   elif output in ('softmax',):
     mat *= 0
 
-  if recur:
-    mat /= np.sqrt(2)
+  if recur > 1:
+    mat /= np.sqrt(recur)
   #---------------------------------------------------------------------
   # Return the matrix
   return mat.astype('float32')
