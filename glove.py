@@ -35,6 +35,8 @@ CLIPSIZE = 32
 class LOpt():
   """"""
   
+  #=====================================================================
+  # Build an optimizer
   def build_optimizer(self, delta_moment=False, max_force=False, eta=1e-3, a_eta=0, b_eta=1, rho1=.49, rho2=.95, a_rho=5, b_rho=.5, epsilon=1e-4, dropout=1.):
     """"""
     
@@ -135,6 +137,1027 @@ class LOpt():
         else:
           d_t = -eta_t*g_t / v_t_hat
         pupdates.append((L, T.inc_subtensor(L[gidxs[-1]], d_t)))
+        nupdates.append((gL, T.set_subtensor(gL[gidxs[-1]], np.float32(0))))
+     
+    #-------------------------------------------------------------------
+    # Compile the functions
+    gradientizer = theano.function(
+      inputs=[self.x, self.x_tilde, self.y],
+      outputs=self.cost,
+      givens=givens,
+      updates=grupdates,
+      name='gradientizer')
+    
+    optimizer = theano.function(
+      inputs=gidxs,
+      updates=pupdates,
+      name='optimizer')
+    
+    nihilizer = theano.function(
+      inputs=gidxs,
+      updates=nupdates,
+      name='nihilizer')
+      
+    return gradientizer, optimizer, nihilizer
+  
+  #=====================================================================
+  # Build an SGD optimizer
+  def build_SGD(self, eta=1e-3, a_eta=0, b_eta=1, dropout=1.):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta  = np.float32(eta)
+    a_eta = np.float32(a_eta)
+    b_eta = np.float32(b_eta)
+    
+    #-------------------------------------------------------------------
+    # Set up the updates
+    grupdates = []
+    pupdates  = []
+    nupdates  = []
+    
+    #-------------------------------------------------------------------
+    # Set up a variable to keep track of the minibatch size
+    ndata = theano.shared(np.float32(0), name='ndata')
+    grupdates.append((ndata, ndata+np.float32(1)))
+    nupdates.append((ndata, np.float32(0)))
+    
+    #-------------------------------------------------------------------
+    # Compute the dropout 
+    if dropout < 1:
+      givens = [(self.hmask, srng.binomial(self.hmask.shape, 1, dropout, dtype='float32'))]
+    else:
+      givens = []
+    
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    group = [[self.x[i] for i in xrange(len(self.wsizes()))] + [self.x_tilde],
+             zip(self.theta_L + self.theta_L_tilde, self.theta_Lb + self.theta_Lb_tilde),
+             zip(self.gtheta_L + self.gtheta_L_tilde, self.gtheta_Lb + self.gtheta_Lb_tilde),
+             zip(self.gstheta_x + self.gstheta_x_tilde, self.gstheta_xb + self.gstheta_xb_tilde)]
+    gidxs = []
+    for x, Ls, gLs, gxs in zip(*group):
+      gidxs.append(T.ivector('gidxs-%s' % Ls[0].name))
+      
+      tau = theano.shared(np.zeros(Ls[0].get_value().shape[0], dtype='float32'), name='tau-%s' % Ls[0].name)
+      pupdates.append((tau, T.inc_subtensor(tau[gidxs[-1]], np.float32(1))))
+      
+      for L, gL, gx in zip(Ls, gLs, gxs):
+        Lshape = L.get_value().shape
+        if len(Lshape) > 1:
+          tau_t = tau[gidxs[-1]][:,None]
+        else:
+          tau_t = tau[gidxs[-1]]
+        if a_eta > 0:
+          eta_t = eta*T.pow(tau_t/a_eta + np.float32(1), -b_eta)
+        else:
+          eta_t = eta
+        
+        g_t = gL[gidxs[-1]] / ndata
+        d_t = -eta_t*g_t
+        
+        grupdates.append((gL, T.inc_subtensor(gL[x], T.clip(gx, -CLIPSIZE, CLIPSIZE))))
+        pupdates.append((L, T.inc_subtensor(L[gidxs[-1]], d_t)))
+        nupdates.append((gL, T.set_subtensor(gL[gidxs[-1]], np.float32(0))))
+     
+    #-------------------------------------------------------------------
+    # Compile the functions
+    gradientizer = theano.function(
+      inputs=[self.x, self.x_tilde, self.y],
+      outputs=self.cost,
+      givens=givens,
+      updates=grupdates,
+      name='gradientizer')
+    
+    optimizer = theano.function(
+      inputs=gidxs,
+      updates=pupdates,
+      name='optimizer')
+    
+    nihilizer = theano.function(
+      inputs=gidxs,
+      updates=nupdates,
+      name='nihilizer')
+      
+    return gradientizer, optimizer, nihilizer
+  
+  #=====================================================================
+  # Build a momentum optimizer
+  def build_momentum(self, eta=1e-3, mu=.49, a_eta=0, b_eta=1, a_mu=0, b_mu=1, dropout=1.):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta  = np.float32(eta)
+    mu   = np.float32(mu)
+    a_eta = np.float32(a_eta)
+    b_eta = np.float32(b_eta)
+    a_mu = np.float32(a_mu)
+    b_mu = np.float32(b_mu)
+    
+    #-------------------------------------------------------------------
+    # Set up the updates
+    grupdates = []
+    pupdates  = []
+    nupdates  = []
+    
+    #-------------------------------------------------------------------
+    # Set up a variable to keep track of the minibatch size
+    ndata = theano.shared(np.float32(0), name='ndata')
+    grupdates.append((ndata, ndata+np.float32(1)))
+    nupdates.append((ndata, np.float32(0)))
+    
+    #-------------------------------------------------------------------
+    # Compute the dropout 
+    if dropout < 1:
+      givens = [(self.hmask, srng.binomial(self.hmask.shape, 1, dropout, dtype='float32'))]
+    else:
+      givens = []
+    
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    group = [[self.x[i] for i in xrange(len(self.wsizes()))] + [self.x_tilde],
+             zip(self.theta_L + self.theta_L_tilde, self.theta_Lb + self.theta_Lb_tilde),
+             zip(self.gtheta_L + self.gtheta_L_tilde, self.gtheta_Lb + self.gtheta_Lb_tilde),
+             zip(self.gstheta_x + self.gstheta_x_tilde, self.gstheta_xb + self.gstheta_xb_tilde)]
+    gidxs = []
+    for x, Ls, gLs, gxs in zip(*group):
+      gidxs.append(T.ivector('gidxs-%s' % Ls[0].name))
+      
+      tau = theano.shared(np.zeros(Ls[0].get_value().shape[0], dtype='float32'), name='tau-%s' % Ls[0].name)
+      pupdates.append((tau, T.inc_subtensor(tau[gidxs[-1]], np.float32(1))))
+      
+      for L, gL, gx in zip(Ls, gLs, gxs):
+        Lshape = L.get_value().shape
+        if len(Lshape) > 1:
+          tau_t = tau[gidxs[-1]][:,None]
+        else:
+          tau_t = tau[gidxs[-1]]
+        if a_eta > 0:
+          eta_t = eta*T.pow(tau_t/a_eta + np.float32(1), -b_eta)
+        else:
+          eta_t = eta
+        if a_mu > 0:
+          mu_t = np.float32(1)-mu*T.pow(tau_t/a_mu + np.float32(1), -b_mu)
+        else:
+          mu_t = mu
+        
+        mL = theano.shared(np.zeros(Lshape, dtype='float32'), name='m%s' % L.name)
+        g_t = gL[gidxs[-1]] / ndata
+        m_t = mu_t*mL[gidxs[-1]] + (np.float32(1)-mu_t)*g_t
+        if a_mu == 0:
+          m_t_hat = m_t / (np.float32(1)-mu_t**(tau_t+np.float32(1)))
+        else:
+          m_t_hat = m_t
+        d_t = -eta_t*m_t_hat
+        
+        grupdates.append((gL, T.inc_subtensor(gL[x], T.clip(gx, -CLIPSIZE, CLIPSIZE))))
+        pupdates.append((L, T.inc_subtensor(L[gidxs[-1]], d_t)))
+        pupdates.append((mL, T.set_subtensor(mL[gidxs[-1]], m_t)))
+        nupdates.append((gL, T.set_subtensor(gL[gidxs[-1]], np.float32(0))))
+     
+    #-------------------------------------------------------------------
+    # Compile the functions
+    gradientizer = theano.function(
+      inputs=[self.x, self.x_tilde, self.y],
+      outputs=self.cost,
+      givens=givens,
+      updates=grupdates,
+      name='gradientizer')
+    
+    optimizer = theano.function(
+      inputs=gidxs,
+      updates=pupdates,
+      name='optimizer')
+    
+    nihilizer = theano.function(
+      inputs=gidxs,
+      updates=nupdates,
+      name='nihilizer')
+      
+    return gradientizer, optimizer, nihilizer
+  
+  #=====================================================================
+  # Build an MMAProp optimizer
+  def build_MMAProp(self, eta=1e-3, rho=.95, a_eta=0, b_eta=1, a_rho=0, b_rho=1, epsilon=1e-6, dropout=1.):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta  = np.float32(eta)
+    rho  = np.float32(rho)
+    a_eta = np.float32(a_eta)
+    b_eta = np.float32(b_eta)
+    a_rho = np.float32(a_rho)
+    b_rho = np.float32(b_rho)
+    epsilon = np.float32(epsilon)
+    
+    #-------------------------------------------------------------------
+    # Set up the updates
+    grupdates = []
+    pupdates  = []
+    nupdates  = []
+    
+    #-------------------------------------------------------------------
+    # Set up a variable to keep track of the minibatch size
+    ndata = theano.shared(np.float32(0), name='ndata')
+    grupdates.append((ndata, ndata+np.float32(1)))
+    nupdates.append((ndata, np.float32(0)))
+    
+    #-------------------------------------------------------------------
+    # Compute the dropout 
+    if dropout < 1:
+      givens = [(self.hmask, srng.binomial(self.hmask.shape, 1, dropout, dtype='float32'))]
+    else:
+      givens = []
+    
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    group = [[self.x[i] for i in xrange(len(self.wsizes()))] + [self.x_tilde],
+             zip(self.theta_L + self.theta_L_tilde, self.theta_Lb + self.theta_Lb_tilde),
+             zip(self.gtheta_L + self.gtheta_L_tilde, self.gtheta_Lb + self.gtheta_Lb_tilde),
+             zip(self.gstheta_x + self.gstheta_x_tilde, self.gstheta_xb + self.gstheta_xb_tilde)]
+    gidxs = []
+    for x, Ls, gLs, gxs in zip(*group):
+      gidxs.append(T.ivector('gidxs-%s' % Ls[0].name))
+      
+      tau = theano.shared(np.zeros(Ls[0].get_value().shape[0], dtype='float32'), name='tau-%s' % Ls[0].name)
+      pupdates.append((tau, T.inc_subtensor(tau[gidxs[-1]], np.float32(1))))
+      
+      for L, gL, gx in zip(Ls, gLs, gxs):
+        Lshape = L.get_value().shape
+        if len(Lshape) > 1:
+          tau_t = tau[gidxs[-1]][:,None]
+        else:
+          tau_t = tau[gidxs[-1]]
+        if a_eta > 0:
+          eta_t = eta*T.pow(tau_t/a_eta + np.float32(1), -b_eta)
+        else:
+          eta_t = eta
+        if a_rho > 0:
+          rho_t = np.float32(1)-rho*T.pow(tau_t/a_rho + np.float32(1), -b_rho)
+        else:
+          rho_t = rho
+        
+        vL = theano.shared(np.zeros(Lshape, dtype='float32'), name='v%s' % L.name)
+        g_t = gL[gidxs[-1]] / ndata
+        v_t = T.maximum(rho_t*vL[gidxs[-1]], T.abs_(g_t))
+        v_t_hat = v_t
+        d_t = -eta_t*g_t/(v_t_hat+T.sqrt(epsilon))
+        
+        grupdates.append((gL, T.inc_subtensor(gL[x], T.clip(gx, -CLIPSIZE, CLIPSIZE))))
+        pupdates.append((L, T.inc_subtensor(L[gidxs[-1]], d_t)))
+        pupdates.append((vL, T.set_subtensor(vL[gidxs[-1]], v_t)))
+        nupdates.append((gL, T.set_subtensor(gL[gidxs[-1]], np.float32(0))))
+     
+    #-------------------------------------------------------------------
+    # Compile the functions
+    gradientizer = theano.function(
+      inputs=[self.x, self.x_tilde, self.y],
+      outputs=self.cost,
+      givens=givens,
+      updates=grupdates,
+      name='gradientizer')
+    
+    optimizer = theano.function(
+      inputs=gidxs,
+      updates=pupdates,
+      name='optimizer')
+    
+    nihilizer = theano.function(
+      inputs=gidxs,
+      updates=nupdates,
+      name='nihilizer')
+      
+    return gradientizer, optimizer, nihilizer
+  
+  
+  #=====================================================================
+  # Build an RMSProp optimizer
+  def build_RMSProp(self, eta=1e-3, rho=.95, a_eta=0, b_eta=1, a_rho=0, b_rho=1, epsilon=1e-6, dropout=1.):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta  = np.float32(eta)
+    rho  = np.float32(rho)
+    a_eta = np.float32(a_eta)
+    b_eta = np.float32(b_eta)
+    a_rho = np.float32(a_rho)
+    b_rho = np.float32(b_rho)
+    epsilon = np.float32(epsilon)
+    
+    #-------------------------------------------------------------------
+    # Set up the updates
+    grupdates = []
+    pupdates  = []
+    nupdates  = []
+    
+    #-------------------------------------------------------------------
+    # Set up a variable to keep track of the minibatch size
+    ndata = theano.shared(np.float32(0), name='ndata')
+    grupdates.append((ndata, ndata+np.float32(1)))
+    nupdates.append((ndata, np.float32(0)))
+    
+    #-------------------------------------------------------------------
+    # Compute the dropout 
+    if dropout < 1:
+      givens = [(self.hmask, srng.binomial(self.hmask.shape, 1, dropout, dtype='float32'))]
+    else:
+      givens = []
+    
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    group = [[self.x[i] for i in xrange(len(self.wsizes()))] + [self.x_tilde],
+             zip(self.theta_L + self.theta_L_tilde, self.theta_Lb + self.theta_Lb_tilde),
+             zip(self.gtheta_L + self.gtheta_L_tilde, self.gtheta_Lb + self.gtheta_Lb_tilde),
+             zip(self.gstheta_x + self.gstheta_x_tilde, self.gstheta_xb + self.gstheta_xb_tilde)]
+    gidxs = []
+    for x, Ls, gLs, gxs in zip(*group):
+      gidxs.append(T.ivector('gidxs-%s' % Ls[0].name))
+      
+      tau = theano.shared(np.zeros(Ls[0].get_value().shape[0], dtype='float32'), name='tau-%s' % Ls[0].name)
+      pupdates.append((tau, T.inc_subtensor(tau[gidxs[-1]], np.float32(1))))
+      
+      for L, gL, gx in zip(Ls, gLs, gxs):
+        Lshape = L.get_value().shape
+        if len(Lshape) > 1:
+          tau_t = tau[gidxs[-1]][:,None]
+        else:
+          tau_t = tau[gidxs[-1]]
+        if a_eta > 0:
+          eta_t = eta*T.pow(tau_t/a_eta + np.float32(1), -b_eta)
+        else:
+          eta_t = eta
+        if a_rho > 0:
+          rho_t = np.float32(1)-rho*T.pow(tau_t/a_rho + np.float32(1), -b_rho)
+        else:
+          rho_t = rho
+        
+        vL = theano.shared(np.zeros(Lshape, dtype='float32'), name='v%s' % L.name)
+        g_t = gL[gidxs[-1]] / ndata
+        v_t = rho_t*vL[gidxs[-1]] + (np.float32(1)-rho_t)*T.sqr(g_t)
+        if a_rho == 0:
+          v_t_hat = v_t / (np.float32(1)-rho_t**(tau_t+np.float32(1)))
+        else:
+          v_t_hat = v_t
+        d_t = -eta_t*g_t/T.sqrt(v_t_hat+epsilon)
+        
+        grupdates.append((gL, T.inc_subtensor(gL[x], T.clip(gx, -CLIPSIZE, CLIPSIZE))))
+        pupdates.append((L, T.inc_subtensor(L[gidxs[-1]], d_t)))
+        pupdates.append((vL, T.set_subtensor(vL[gidxs[-1]], v_t)))
+        nupdates.append((gL, T.set_subtensor(gL[gidxs[-1]], np.float32(0))))
+     
+    #-------------------------------------------------------------------
+    # Compile the functions
+    gradientizer = theano.function(
+      inputs=[self.x, self.x_tilde, self.y],
+      outputs=self.cost,
+      givens=givens,
+      updates=grupdates,
+      name='gradientizer')
+    
+    optimizer = theano.function(
+      inputs=gidxs,
+      updates=pupdates,
+      name='optimizer')
+    
+    nihilizer = theano.function(
+      inputs=gidxs,
+      updates=nupdates,
+      name='nihilizer')
+      
+    return gradientizer, optimizer, nihilizer
+  
+  #=====================================================================
+  # Build an Adam optimizer
+  def build_Adam(self, eta=1e-3, mu=.49, rho=.95, a_eta=0, b_eta=1, a_mu=0, b_mu=1, a_rho=0, b_rho=1, epsilon=1e-6, dropout=1.):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta  = np.float32(eta)
+    mu   = np.float32(mu)
+    rho  = np.float32(rho)
+    a_eta = np.float32(a_eta)
+    b_eta = np.float32(b_eta)
+    a_mu  = np.float32(a_mu)
+    b_mu  = np.float32(b_mu)
+    a_rho = np.float32(a_rho)
+    b_rho = np.float32(b_rho)
+    epsilon = np.float32(epsilon)
+    
+    #-------------------------------------------------------------------
+    # Set up the updates
+    grupdates = []
+    pupdates  = []
+    nupdates  = []
+    
+    #-------------------------------------------------------------------
+    # Set up a variable to keep track of the minibatch size
+    ndata = theano.shared(np.float32(0), name='ndata')
+    grupdates.append((ndata, ndata+np.float32(1)))
+    nupdates.append((ndata, np.float32(0)))
+    
+    #-------------------------------------------------------------------
+    # Compute the dropout 
+    if dropout < 1:
+      givens = [(self.hmask, srng.binomial(self.hmask.shape, 1, dropout, dtype='float32'))]
+    else:
+      givens = []
+    
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    group = [[self.x[i] for i in xrange(len(self.wsizes()))] + [self.x_tilde],
+             zip(self.theta_L + self.theta_L_tilde, self.theta_Lb + self.theta_Lb_tilde),
+             zip(self.gtheta_L + self.gtheta_L_tilde, self.gtheta_Lb + self.gtheta_Lb_tilde),
+             zip(self.gstheta_x + self.gstheta_x_tilde, self.gstheta_xb + self.gstheta_xb_tilde)]
+    gidxs = []
+    for x, Ls, gLs, gxs in zip(*group):
+      gidxs.append(T.ivector('gidxs-%s' % Ls[0].name))
+      
+      tau = theano.shared(np.zeros(Ls[0].get_value().shape[0], dtype='float32'), name='tau-%s' % Ls[0].name)
+      pupdates.append((tau, T.inc_subtensor(tau[gidxs[-1]], np.float32(1))))
+      
+      for L, gL, gx in zip(Ls, gLs, gxs):
+        Lshape = L.get_value().shape
+        if len(Lshape) > 1:
+          tau_t = tau[gidxs[-1]][:,None]
+        else:
+          tau_t = tau[gidxs[-1]]
+        if a_eta > 0:
+          eta_t = eta*T.pow(tau_t/a_eta + np.float32(1), -b_eta)
+        else:
+          eta_t = eta
+        if a_mu > 0:
+          mu_t = np.float32(1)-mu*T.pow(tau_t/a_mu + np.float32(1), -b_mu)
+        else:
+          mu_t = mu
+        if a_rho > 0:
+          rho_t = np.float32(1)-rho*T.pow(tau_t/a_rho + np.float32(1), -b_rho)
+        else:
+          rho_t = rho
+        
+        mL = theano.shared(np.zeros(Lshape, dtype='float32'), name='m%s' % L.name)
+        vL = theano.shared(np.zeros(Lshape, dtype='float32'), name='v%s' % L.name)
+        g_t = gL[gidxs[-1]] / ndata
+        m_t = mu_t*mL[gidxs[-1]] + (np.float32(1)-mu_t)*g_t
+        v_t = rho_t*vL[gidxs[-1]] + (np.float32(1)-rho_t)*T.sqr(g_t)
+        if a_mu == 0:
+          m_t_hat = m_t / (np.float32(1)-mu_t**(tau_t+np.float32(1)))
+        else:
+          m_t_hat = m_t
+        if a_rho == 0:
+          v_t_hat = v_t / (np.float32(1)-rho_t**(tau_t+np.float32(1)))
+        else:
+          v_t_hat = v_t
+        d_t = -eta_t*m_t_hat/T.sqrt(v_t_hat+epsilon)
+        
+        grupdates.append((gL, T.inc_subtensor(gL[x], T.clip(gx, -CLIPSIZE, CLIPSIZE))))
+        pupdates.append((L, T.inc_subtensor(L[gidxs[-1]], d_t)))
+        pupdates.append((mL, T.set_subtensor(mL[gidxs[-1]], m_t)))
+        pupdates.append((vL, T.set_subtensor(vL[gidxs[-1]], v_t)))
+        nupdates.append((gL, T.set_subtensor(gL[gidxs[-1]], np.float32(0))))
+     
+    #-------------------------------------------------------------------
+    # Compile the functions
+    gradientizer = theano.function(
+      inputs=[self.x, self.x_tilde, self.y],
+      outputs=self.cost,
+      givens=givens,
+      updates=grupdates,
+      name='gradientizer')
+    
+    optimizer = theano.function(
+      inputs=gidxs,
+      updates=pupdates,
+      name='optimizer')
+    
+    nihilizer = theano.function(
+      inputs=gidxs,
+      updates=nupdates,
+      name='nihilizer')
+      
+    return gradientizer, optimizer, nihilizer
+  
+  #=====================================================================
+  # Build an AdaMax optimizer
+  def build_AdaMax(self, eta=1e-3, mu=.49, rho=.95, a_eta=0, b_eta=1, a_mu=0, b_mu=1, a_rho=0, b_rho=1, epsilon=1e-6, dropout=1.):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta  = np.float32(eta)
+    mu   = np.float32(mu)
+    rho  = np.float32(rho)
+    a_eta = np.float32(a_eta)
+    b_eta = np.float32(b_eta)
+    a_mu  = np.float32(a_mu)
+    b_mu  = np.float32(b_mu)
+    a_rho = np.float32(a_rho)
+    b_rho = np.float32(b_rho)
+    epsilon = np.float32(epsilon)
+    
+    #-------------------------------------------------------------------
+    # Set up the updates
+    grupdates = []
+    pupdates  = []
+    nupdates  = []
+    
+    #-------------------------------------------------------------------
+    # Set up a variable to keep track of the minibatch size
+    ndata = theano.shared(np.float32(0), name='ndata')
+    grupdates.append((ndata, ndata+np.float32(1)))
+    nupdates.append((ndata, np.float32(0)))
+    
+    #-------------------------------------------------------------------
+    # Compute the dropout 
+    if dropout < 1:
+      givens = [(self.hmask, srng.binomial(self.hmask.shape, 1, dropout, dtype='float32'))]
+    else:
+      givens = []
+    
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    group = [[self.x[i] for i in xrange(len(self.wsizes()))] + [self.x_tilde],
+             zip(self.theta_L + self.theta_L_tilde, self.theta_Lb + self.theta_Lb_tilde),
+             zip(self.gtheta_L + self.gtheta_L_tilde, self.gtheta_Lb + self.gtheta_Lb_tilde),
+             zip(self.gstheta_x + self.gstheta_x_tilde, self.gstheta_xb + self.gstheta_xb_tilde)]
+    gidxs = []
+    for x, Ls, gLs, gxs in zip(*group):
+      gidxs.append(T.ivector('gidxs-%s' % Ls[0].name))
+      
+      tau = theano.shared(np.zeros(Ls[0].get_value().shape[0], dtype='float32'), name='tau-%s' % Ls[0].name)
+      pupdates.append((tau, T.inc_subtensor(tau[gidxs[-1]], np.float32(1))))
+      
+      for L, gL, gx in zip(Ls, gLs, gxs):
+        Lshape = L.get_value().shape
+        if len(Lshape) > 1:
+          tau_t = tau[gidxs[-1]][:,None]
+        else:
+          tau_t = tau[gidxs[-1]]
+        if a_eta > 0:
+          eta_t = eta*T.pow(tau_t/a_eta + np.float32(1), -b_eta)
+        else:
+          eta_t = eta
+        if a_mu > 0:
+          mu_t = np.float32(1)-mu*T.pow(tau_t/a_mu + np.float32(1), -b_mu)
+        else:
+          mu_t = mu
+        if a_rho > 0:
+          rho_t = np.float32(1)-rho*T.pow(tau_t/a_rho + np.float32(1), -b_rho)
+        else:
+          rho_t = rho
+        
+        mL = theano.shared(np.zeros(Lshape, dtype='float32'), name='m%s' % L.name)
+        vL = theano.shared(np.zeros(Lshape, dtype='float32'), name='v%s' % L.name)
+        g_t = gL[gidxs[-1]] / ndata
+        m_t = mu_t*mL[gidxs[-1]] + (np.float32(1)-mu_t)*g_t
+        v_t = T.maximum(rho_t*vL[gidxs[-1]], T.abs_(g_t))
+        if a_mu == 0:
+          m_t_hat = m_t / (np.float32(1)-mu_t**(tau_t+np.float32(1)))
+        else:
+          m_t_hat = m_t
+        v_t_hat = v_t
+        d_t = -eta_t*m_t_hat/(v_t_hat+T.sqrt(epsilon))
+        
+        grupdates.append((gL, T.inc_subtensor(gL[x], T.clip(gx, -CLIPSIZE, CLIPSIZE))))
+        pupdates.append((L, T.inc_subtensor(L[gidxs[-1]], d_t)))
+        pupdates.append((mL, T.set_subtensor(mL[gidxs[-1]], m_t)))
+        pupdates.append((vL, T.set_subtensor(vL[gidxs[-1]], v_t)))
+        nupdates.append((gL, T.set_subtensor(gL[gidxs[-1]], np.float32(0))))
+     
+    #-------------------------------------------------------------------
+    # Compile the functions
+    gradientizer = theano.function(
+      inputs=[self.x, self.x_tilde, self.y],
+      outputs=self.cost,
+      givens=givens,
+      updates=grupdates,
+      name='gradientizer')
+    
+    optimizer = theano.function(
+      inputs=gidxs,
+      updates=pupdates,
+      name='optimizer')
+    
+    nihilizer = theano.function(
+      inputs=gidxs,
+      updates=nupdates,
+      name='nihilizer')
+      
+    return gradientizer, optimizer, nihilizer
+  
+  #=====================================================================
+  # Build an AdaDelta optimizer
+  def build_AdaDelta(self, eta=1e-3, mu=.49, rho=.95, a_eta=0, b_eta=1, a_mu=0, b_mu=1, a_rho=0, b_rho=1, epsilon=1e-6, dropout=1.):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta  = np.float32(eta**2)
+    mu   = np.float32(mu)
+    rho  = np.float32(rho)
+    a_eta = np.float32(a_eta)
+    b_eta = np.float32(b_eta)
+    a_mu  = np.float32(a_mu)
+    b_mu  = np.float32(b_mu)
+    a_rho = np.float32(a_rho)
+    b_rho = np.float32(b_rho)
+    epsilon = np.float32(epsilon)
+    
+    #-------------------------------------------------------------------
+    # Set up the updates
+    grupdates = []
+    pupdates  = []
+    nupdates  = []
+    
+    #-------------------------------------------------------------------
+    # Set up a variable to keep track of the minibatch size
+    ndata = theano.shared(np.float32(0), name='ndata')
+    grupdates.append((ndata, ndata+np.float32(1)))
+    nupdates.append((ndata, np.float32(0)))
+    
+    #-------------------------------------------------------------------
+    # Compute the dropout 
+    if dropout < 1:
+      givens = [(self.hmask, srng.binomial(self.hmask.shape, 1, dropout, dtype='float32'))]
+    else:
+      givens = []
+    
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    group = [[self.x[i] for i in xrange(len(self.wsizes()))] + [self.x_tilde],
+             zip(self.theta_L + self.theta_L_tilde, self.theta_Lb + self.theta_Lb_tilde),
+             zip(self.gtheta_L + self.gtheta_L_tilde, self.gtheta_Lb + self.gtheta_Lb_tilde),
+             zip(self.gstheta_x + self.gstheta_x_tilde, self.gstheta_xb + self.gstheta_xb_tilde)]
+    gidxs = []
+    for x, Ls, gLs, gxs in zip(*group):
+      gidxs.append(T.ivector('gidxs-%s' % Ls[0].name))
+      
+      tau = theano.shared(np.zeros(Ls[0].get_value().shape[0], dtype='float32'), name='tau-%s' % Ls[0].name)
+      pupdates.append((tau, T.inc_subtensor(tau[gidxs[-1]], np.float32(1))))
+      
+      for L, gL, gx in zip(Ls, gLs, gxs):
+        Lshape = L.get_value().shape
+        if len(Lshape) > 1:
+          tau_t = tau[gidxs[-1]][:,None]
+        else:
+          tau_t = tau[gidxs[-1]]
+        if a_eta > 0:
+          eta_t = eta*T.pow(tau_t/a_eta + np.float32(1), -b_eta)
+        else:
+          eta_t = eta
+        if a_mu > 0:
+          mu_t = np.float32(1)-mu*T.pow(tau_t/a_mu + np.float32(1), -b_mu)
+        else:
+          mu_t = mu
+        if a_rho > 0:
+          rho_t = np.float32(1)-rho*T.pow(tau_t/a_rho + np.float32(1), -b_rho)
+        else:
+          rho_t = rho
+        
+        mL = theano.shared(np.zeros(Lshape, dtype='float32'), name='m%s' % L.name)
+        vL = theano.shared(np.zeros(Lshape, dtype='float32'), name='v%s' % L.name)
+        g_t = gL[gidxs[-1]] / ndata
+        if a_mu == 0:
+          d_tm1_hat = T.switch(tau_t == 0, np.float32(0), mL[gidxs[-1]] / (np.float32(1)-mu_t**(tau_t)))
+        else:
+          d_tm1_hat = mL[gidxs[-1]]
+        v_t = rho_t*vL[gidxs[-1]] + (np.float32(1)-rho_t)*T.sqr(g_t)
+        if a_rho == 0:
+          v_t_hat = v_t / (np.float32(1)-rho_t**(tau_t+np.float32(1)))
+        else:
+          v_t_hat = v_t
+        d_t = -T.sqrt(d_tm1_hat+eta_t)/T.sqrt(v_t_hat+epsilon)*g_t
+        m_t = mu_t*mL[gidxs[-1]] + (np.float32(1)-mu_t)*T.sqr(d_t)
+        
+        grupdates.append((gL, T.inc_subtensor(gL[x], T.clip(gx, -CLIPSIZE, CLIPSIZE))))
+        pupdates.append((L, T.inc_subtensor(L[gidxs[-1]], d_t)))
+        pupdates.append((mL, T.set_subtensor(mL[gidxs[-1]], m_t)))
+        pupdates.append((vL, T.set_subtensor(vL[gidxs[-1]], v_t)))
+        nupdates.append((gL, T.set_subtensor(gL[gidxs[-1]], np.float32(0))))
+     
+    #-------------------------------------------------------------------
+    # Compile the functions
+    gradientizer = theano.function(
+      inputs=[self.x, self.x_tilde, self.y],
+      outputs=self.cost,
+      givens=givens,
+      updates=grupdates,
+      name='gradientizer')
+    
+    optimizer = theano.function(
+      inputs=gidxs,
+      updates=pupdates,
+      name='optimizer')
+    
+    nihilizer = theano.function(
+      inputs=gidxs,
+      updates=nupdates,
+      name='nihilizer')
+      
+    return gradientizer, optimizer, nihilizer
+  
+  #=====================================================================
+  # Build a NAG optimizer
+  def build_NAG(self, eta=1e-3, mu=.49, a_eta=0, b_eta=1, a_mu=0, b_mu=1, dropout=1.):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta  = np.float32(eta)
+    mu   = np.float32(mu)
+    a_eta = np.float32(a_eta)
+    b_eta = np.float32(b_eta)
+    a_mu = np.float32(a_mu)
+    b_mu = np.float32(b_mu)
+    
+    #-------------------------------------------------------------------
+    # Set up the updates
+    grupdates = []
+    pupdates  = []
+    nupdates  = []
+    
+    #-------------------------------------------------------------------
+    # Set up a variable to keep track of the minibatch size
+    ndata = theano.shared(np.float32(0), name='ndata')
+    grupdates.append((ndata, ndata+np.float32(1)))
+    nupdates.append((ndata, np.float32(0)))
+    
+    #-------------------------------------------------------------------
+    # Compute the dropout 
+    if dropout < 1:
+      givens = [(self.hmask, srng.binomial(self.hmask.shape, 1, dropout, dtype='float32'))]
+    else:
+      givens = []
+    
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    group = [[self.x[i] for i in xrange(len(self.wsizes()))] + [self.x_tilde],
+             zip(self.theta_L + self.theta_L_tilde, self.theta_Lb + self.theta_Lb_tilde),
+             zip(self.gtheta_L + self.gtheta_L_tilde, self.gtheta_Lb + self.gtheta_Lb_tilde),
+             zip(self.gstheta_x + self.gstheta_x_tilde, self.gstheta_xb + self.gstheta_xb_tilde)]
+    gidxs = []
+    for x, Ls, gLs, gxs in zip(*group):
+      gidxs.append(T.ivector('gidxs-%s' % Ls[0].name))
+      
+      tau = theano.shared(np.zeros(Ls[0].get_value().shape[0], dtype='float32'), name='tau-%s' % Ls[0].name)
+      pupdates.append((tau, T.inc_subtensor(tau[gidxs[-1]], np.float32(1))))
+      
+      for L, gL, gx in zip(Ls, gLs, gxs):
+        Lshape = L.get_value().shape
+        if len(Lshape) > 1:
+          tau_t = tau[gidxs[-1]][:,None]
+        else:
+          tau_t = tau[gidxs[-1]]
+        if a_eta > 0:
+          eta_t = eta*T.pow(tau_t/a_eta + np.float32(1), -b_eta)
+        else:
+          eta_t = eta
+        if a_mu > 0:
+          mu_t = np.float32(1)-mu*T.pow(tau_t/a_mu + np.float32(1), -b_mu)
+          mu_tp1 = np.float32(1)-mu*T.pow((tau_t+np.float32(1))/a_mu + np.float32(1), -b_mu)
+        else:
+          mu_t = mu
+          mu_tp1 = mu
+        
+        mL = theano.shared(np.zeros(Lshape, dtype='float32'), name='m%s' % L.name)
+        g_t = gL[gidxs[-1]] / ndata
+        m_t = mu_t*mL[gidxs[-1]] + (np.float32(1)-mu_t)*g_t
+        if a_mu == 0:
+          m_t_hat = m_t / (np.float32(1)-mu_t**(tau_t+np.float32(1)))
+        else:
+          m_t_hat = m_t
+        d_t = -eta_t*(mu_tp1*m_t_hat + (np.float32(1)-mu_t)*g_t)
+        
+        grupdates.append((gL, T.inc_subtensor(gL[x], T.clip(gx, -CLIPSIZE, CLIPSIZE))))
+        pupdates.append((L, T.inc_subtensor(L[gidxs[-1]], d_t)))
+        pupdates.append((mL, T.set_subtensor(mL[gidxs[-1]], m_t)))
+        nupdates.append((gL, T.set_subtensor(gL[gidxs[-1]], np.float32(0))))
+     
+    #-------------------------------------------------------------------
+    # Compile the functions
+    gradientizer = theano.function(
+      inputs=[self.x, self.x_tilde, self.y],
+      outputs=self.cost,
+      givens=givens,
+      updates=grupdates,
+      name='gradientizer')
+    
+    optimizer = theano.function(
+      inputs=gidxs,
+      updates=pupdates,
+      name='optimizer')
+    
+    nihilizer = theano.function(
+      inputs=gidxs,
+      updates=nupdates,
+      name='nihilizer')
+      
+    return gradientizer, optimizer, nihilizer
+  
+  #=====================================================================
+  # Build a NAdam optimizer
+  def build_NAdam(self, eta=1e-3, mu=.49, rho=.95, a_eta=0, b_eta=1, a_mu=0, b_mu=1, a_rho=0, b_rho=1, epsilon=1e-6, dropout=1.):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta  = np.float32(eta)
+    mu   = np.float32(mu)
+    rho  = np.float32(rho)
+    a_eta = np.float32(a_eta)
+    b_eta = np.float32(b_eta)
+    a_mu  = np.float32(a_mu)
+    b_mu  = np.float32(b_mu)
+    a_rho = np.float32(a_rho)
+    b_rho = np.float32(b_rho)
+    epsilon = np.float32(epsilon)
+    
+    #-------------------------------------------------------------------
+    # Set up the updates
+    grupdates = []
+    pupdates  = []
+    nupdates  = []
+    
+    #-------------------------------------------------------------------
+    # Set up a variable to keep track of the minibatch size
+    ndata = theano.shared(np.float32(0), name='ndata')
+    grupdates.append((ndata, ndata+np.float32(1)))
+    nupdates.append((ndata, np.float32(0)))
+    
+    #-------------------------------------------------------------------
+    # Compute the dropout 
+    if dropout < 1:
+      givens = [(self.hmask, srng.binomial(self.hmask.shape, 1, dropout, dtype='float32'))]
+    else:
+      givens = []
+    
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    group = [[self.x[i] for i in xrange(len(self.wsizes()))] + [self.x_tilde],
+             zip(self.theta_L + self.theta_L_tilde, self.theta_Lb + self.theta_Lb_tilde),
+             zip(self.gtheta_L + self.gtheta_L_tilde, self.gtheta_Lb + self.gtheta_Lb_tilde),
+             zip(self.gstheta_x + self.gstheta_x_tilde, self.gstheta_xb + self.gstheta_xb_tilde)]
+    gidxs = []
+    for x, Ls, gLs, gxs in zip(*group):
+      gidxs.append(T.ivector('gidxs-%s' % Ls[0].name))
+      
+      tau = theano.shared(np.zeros(Ls[0].get_value().shape[0], dtype='float32'), name='tau-%s' % Ls[0].name)
+      pupdates.append((tau, T.inc_subtensor(tau[gidxs[-1]], np.float32(1))))
+      
+      for L, gL, gx in zip(Ls, gLs, gxs):
+        Lshape = L.get_value().shape
+        if len(Lshape) > 1:
+          tau_t = tau[gidxs[-1]][:,None]
+        else:
+          tau_t = tau[gidxs[-1]]
+        if a_eta > 0:
+          eta_t = eta*T.pow(tau_t/a_eta + np.float32(1), -b_eta)
+        else:
+          eta_t = eta
+        if a_mu > 0:
+          mu_t = np.float32(1)-mu*T.pow(tau_t/a_mu + np.float32(1), -b_mu)
+          mu_tp1 = np.float32(1)-mu*T.pow((tau_t+np.float32(1))/a_mu + np.float32(1), -b_mu)
+        else:
+          mu_t = mu
+          mu_tp1 = mu
+        if a_rho > 0:
+          rho_t = np.float32(1)-rho*T.pow(tau_t/a_rho + np.float32(1), -b_rho)
+        else:
+          rho_t = rho
+        
+        mL = theano.shared(np.zeros(Lshape, dtype='float32'), name='m%s' % L.name)
+        vL = theano.shared(np.zeros(Lshape, dtype='float32'), name='v%s' % L.name)
+        g_t = gL[gidxs[-1]] / ndata
+        m_t = mu_t*mL[gidxs[-1]] + (np.float32(1)-mu_t)*g_t
+        v_t = rho_t*vL[gidxs[-1]] + (np.float32(1)-rho_t)*T.sqr(g_t)
+        if a_mu == 0:
+          m_t_hat = m_t / (np.float32(1)-mu_t**(tau_t+np.float32(1)))
+        else:
+          m_t_hat = m_t
+        if a_rho == 0:
+          v_t_hat = v_t / (np.float32(1)-rho_t**(tau_t+np.float32(1)))
+        else:
+          v_t_hat = v_t
+        d_t = -eta_t*(mu_tp1*m_t_hat + (np.float32(1)-mu_t)*g_t)/T.sqrt(v_t_hat+epsilon)
+        
+        grupdates.append((gL, T.inc_subtensor(gL[x], T.clip(gx, -CLIPSIZE, CLIPSIZE))))
+        pupdates.append((L, T.inc_subtensor(L[gidxs[-1]], d_t)))
+        pupdates.append((mL, T.set_subtensor(mL[gidxs[-1]], m_t)))
+        pupdates.append((vL, T.set_subtensor(vL[gidxs[-1]], v_t)))
+        nupdates.append((gL, T.set_subtensor(gL[gidxs[-1]], np.float32(0))))
+     
+    #-------------------------------------------------------------------
+    # Compile the functions
+    gradientizer = theano.function(
+      inputs=[self.x, self.x_tilde, self.y],
+      outputs=self.cost,
+      givens=givens,
+      updates=grupdates,
+      name='gradientizer')
+    
+    optimizer = theano.function(
+      inputs=gidxs,
+      updates=pupdates,
+      name='optimizer')
+    
+    nihilizer = theano.function(
+      inputs=gidxs,
+      updates=nupdates,
+      name='nihilizer')
+      
+    return gradientizer, optimizer, nihilizer
+  
+  #=====================================================================
+  # Build a NAdaMax optimizer
+  def build_NAdaMax(self, eta=1e-3, mu=.49, rho=.95, a_eta=0, b_eta=1, a_mu=0, b_mu=1, a_rho=0, b_rho=1, epsilon=1e-6, dropout=1.):
+    """"""
+    
+    #-------------------------------------------------------------------
+    # Cast everything as float32
+    eta  = np.float32(eta)
+    mu   = np.float32(mu)
+    rho  = np.float32(rho)
+    a_eta = np.float32(a_eta)
+    b_eta = np.float32(b_eta)
+    a_mu  = np.float32(a_mu)
+    b_mu  = np.float32(b_mu)
+    a_rho = np.float32(a_rho)
+    b_rho = np.float32(b_rho)
+    epsilon = np.float32(epsilon)
+    
+    #-------------------------------------------------------------------
+    # Set up the updates
+    grupdates = []
+    pupdates  = []
+    nupdates  = []
+    
+    #-------------------------------------------------------------------
+    # Set up a variable to keep track of the minibatch size
+    ndata = theano.shared(np.float32(0), name='ndata')
+    grupdates.append((ndata, ndata+np.float32(1)))
+    nupdates.append((ndata, np.float32(0)))
+    
+    #-------------------------------------------------------------------
+    # Compute the dropout 
+    if dropout < 1:
+      givens = [(self.hmask, srng.binomial(self.hmask.shape, 1, dropout, dtype='float32'))]
+    else:
+      givens = []
+    
+    #-------------------------------------------------------------------
+    # Sparse parameters
+    group = [[self.x[i] for i in xrange(len(self.wsizes()))] + [self.x_tilde],
+             zip(self.theta_L + self.theta_L_tilde, self.theta_Lb + self.theta_Lb_tilde),
+             zip(self.gtheta_L + self.gtheta_L_tilde, self.gtheta_Lb + self.gtheta_Lb_tilde),
+             zip(self.gstheta_x + self.gstheta_x_tilde, self.gstheta_xb + self.gstheta_xb_tilde)]
+    gidxs = []
+    for x, Ls, gLs, gxs in zip(*group):
+      gidxs.append(T.ivector('gidxs-%s' % Ls[0].name))
+      
+      tau = theano.shared(np.zeros(Ls[0].get_value().shape[0], dtype='float32'), name='tau-%s' % Ls[0].name)
+      pupdates.append((tau, T.inc_subtensor(tau[gidxs[-1]], np.float32(1))))
+      
+      for L, gL, gx in zip(Ls, gLs, gxs):
+        Lshape = L.get_value().shape
+        if len(Lshape) > 1:
+          tau_t = tau[gidxs[-1]][:,None]
+        else:
+          tau_t = tau[gidxs[-1]]
+        if a_eta > 0:
+          eta_t = eta*T.pow(tau_t/a_eta + np.float32(1), -b_eta)
+        else:
+          eta_t = eta
+        if a_mu > 0:
+          mu_t = np.float32(1)-mu*T.pow(tau_t/a_mu + np.float32(1), -b_mu)
+          mu_tp1 = np.float32(1)-mu*T.pow((tau_t+np.float32(1))/a_mu + np.float32(1), -b_mu)
+        else:
+          mu_t = mu
+          mu_tp1 = mu
+        if a_rho > 0:
+          rho_t = np.float32(1)-rho*T.pow(tau_t/a_rho + np.float32(1), -b_rho)
+        else:
+          rho_t = rho
+        
+        mL = theano.shared(np.zeros(Lshape, dtype='float32'), name='m%s' % L.name)
+        vL = theano.shared(np.zeros(Lshape, dtype='float32'), name='v%s' % L.name)
+        g_t = gL[gidxs[-1]] / ndata
+        m_t = mu_t*mL[gidxs[-1]] + (np.float32(1)-mu_t)*g_t
+        v_t = T.maximum(rho_t*vL[gidxs[-1]], T.abs_(g_t))
+        if a_mu == 0:
+          m_t_hat = m_t / (np.float32(1)-mu_t**(tau_t+np.float32(1)))
+        else:
+          m_t_hat = m_t
+        v_t_hat = v_t
+        d_t = -eta_t*(mu_tp1*m_t_hat + (np.float32(1)-mu_t)*g_t)/(v_t_hat+T.sqrt(epsilon))
+        
+        grupdates.append((gL, T.inc_subtensor(gL[x], T.clip(gx, -CLIPSIZE, CLIPSIZE))))
+        pupdates.append((L, T.inc_subtensor(L[gidxs[-1]], d_t)))
+        pupdates.append((mL, T.set_subtensor(mL[gidxs[-1]], m_t)))
+        pupdates.append((vL, T.set_subtensor(vL[gidxs[-1]], v_t)))
         nupdates.append((gL, T.set_subtensor(gL[gidxs[-1]], np.float32(0))))
      
     #-------------------------------------------------------------------
@@ -829,13 +1852,15 @@ if __name__ == '__main__':
   import glob
   import codecs
   
-  EPOCHS=10
+  EPOCHS=5
   PATH='Glove Compartment'
   OPT = 'Adam'
   ETA = 1e-3
   MODEL = 'spd'
-  EPSILON = 1e-4
+  EPSILON = 1e-6
   POWER = 1
+  MU = .5
+  RHO = .95
   
   i = 0
   while len(sys.argv[1:]) > 0:
@@ -846,12 +1871,16 @@ if __name__ == '__main__':
       POWER = float(sys.argv.pop(0))
     elif arg in ('-n', '--nepochs'):
       EPOCHS = int(sys.argv.pop(0))
-    elif arg in ('-l', '--learning-rate'):
+    elif arg in ('-eta', '--learning-rate'):
       ETA = float(sys.argv.pop(0))
     elif arg in ('-m', '--model'):
       MODEL = sys.argv.pop(0)
     elif arg in ('-e', '--epsilon'):
       EPSILON = float(sys.argv.pop(0))
+    elif arg in ('-mu', '--momentum'):
+      MU = float(sys.argv.pop(0))
+    elif arg in ('-rho', '--norm'):
+      RHO = float(sys.argv.pop(0))
   
   if MODEL == 'spd':
     glove = GloVe([200,50,50], xmin=2, xmax=4, window=7, power=POWER)
@@ -886,21 +1915,31 @@ if __name__ == '__main__':
   
   glove.build_vars()
   
-  if OPT == 'SGD':
-    grad, opt, nihil = glove.build_optimizer(eta=ETA, rho1=0, rho2=0)
-  elif OPT == 'NAG':
-    grad, opt, nihil = glove.build_optimizer(eta=ETA, rho2=0)
+  if   OPT == 'SGD':
+    grad, opt, nihil = glove.build_SGD(eta=ETA)
+  elif OPT == 'Anneal':
+    grad, opt, nihil = glove.build_SGD(eta=ETA, a_eta=5, b_eta=.5)
+  elif OPT == 'Momentum':
+    grad, opt, nihil = glove.build_momentum(eta=ETA, mu=MU, a_mu=5, b_mu=.5)
   elif OPT == 'RMSProp':
-    grad, opt, nihil = glove.build_optimizer(eta=ETA, rho1=0)
-  elif OPT == 'AdaDelta':
-    grad, opt, nihil = glove.build_optimizer(eta=ETA, delta_moment=True)
+    grad, opt, nihil = glove.build_RMSProp(eta=ETA, rho=RHO, epsilon=EPSILON, a_rho=5, b_rho=.5)
+  elif OPT == 'MMAProp':
+    grad, opt, nihil = glove.build_MMAProp(eta=ETA, rho=RHO, epsilon=EPSILON, a_rho=5, b_rho=.5)
   elif OPT == 'Adam':
-    grad, opt, nihil = glove.build_optimizer(eta=ETA, epsilon=EPSILON)
+    grad, opt, nihil = glove.build_Adam(eta=ETA, epsilon=EPSILON, mu=MU, rho=RHO, a_mu=5, b_mu=.5, a_rho=5, b_rho=.5)
   elif OPT == 'AdaMax':
-    grad, opt, nihil = glove.build_optimizer(eta=ETA, max_force=True)
+    grad, opt, nihil = glove.build_AdaMax(eta=ETA, epsilon=EPSILON, mu=MU, rho=RHO, a_mu=5, b_mu=.5, a_rho=5, b_rho=.5)
+  elif OPT == 'AdaDelta':
+    grad, opt, nihil = glove.build_AdaDelta(eta=ETA, epsilon=EPSILON, mu=MU, rho=RHO, a_mu=5, b_mu=.5, a_rho=5, b_rho=.5)
+  elif OPT == 'NAG':
+    grad, opt, nihil = glove.build_NAG(eta=ETA, mu=MU, a_mu=5, b_mu=.5)
+  elif OPT == 'NAdam':
+    grad, opt, nihil = glove.build_NAdam(eta=ETA, epsilon=EPSILON, mu=MU, rho=RHO, a_mu=5, b_mu=.5, a_rho=5, b_rho=.5)
+  elif OPT == 'NAdaMax':
+    grad, opt, nihil = glove.build_NAdaMax(eta=ETA, epsilon=EPSILON, mu=MU, rho=RHO, a_mu=5, b_mu=.5, a_rho=5, b_rho=.5)
     
-  print ETA, EPSILON
+  print OPT, ETA, MU, RHO
   #name=os.path.join(PATH, (('glv'+'-%s'*len(DIM)+'-%s%.1e') % (tuple(DIM)+(OPT,ETA))))
-  name=os.path.join(PATH, 'glv-%d-%s-%s' % (POWER,OPT,MODEL))
+  name=os.path.join(PATH, 'glv-%.3f-%.3f-%.3f-%s-%s' % (ETA,MU,RHO,OPT,MODEL))
   glove.train(grad, opt, nihil, save_name=name, print_every=10, epochs=EPOCHS, batch_size=.01)
   
